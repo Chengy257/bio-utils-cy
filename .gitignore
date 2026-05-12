@@ -1,0 +1,26 @@
+# Ignore workflows directory
+workflows/
+
+# Ignore myscripts_new (legacy placeholder)
+myscripts_new/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# R
+.Rhistory
+.RData
+.Rproj.user/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code
+.claude/
