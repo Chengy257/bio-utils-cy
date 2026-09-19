@@ -1,8 +1,7 @@
-# Local-only archives and raw script backups (not part of the published repo)
+# Raw pre-rewrite script backup (published copies live in archives/)
 /raw_scritps/
-/archives/
 
-# Standalone helper scripts kept locally only
+# Local duplicates of archived helper scripts
 /njoin.sh
 /transposition.sh
 
