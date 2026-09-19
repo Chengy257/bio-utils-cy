@@ -4,10 +4,11 @@ Personal bioinformatics toolkit for next-generation sequencing (NGS) data analys
 
 This repository contains standalone utility scripts covering RNA-seq, ChIP-seq, CUT&Tag, ATAC-seq, sRNA-seq, ribosome profiling, lncRNA analysis, proteomics, and general data processing.
 
-- **`myscripts/`** — Rewritten, production-quality scripts (Python / R / Bash), optimized with robust error handling, full CLI help, and consistent code style.
-- **`myscripts_raw/`** — Original scripts preserved as archive.
+- **`bin/`** — All executable scripts in one flat directory (Python / R / Bash), production quality with robust error handling, full CLI help, and consistent code style. Functional categories are documented in the index below, not in the file tree.
+- **`config/`** — Unified project-wide configuration shared by all scripts (see [Configuration](#configuration)).
+- **`archives/`** — Original pre-rewrite scripts preserved as archive.
 
-> The rewritten scripts in `myscripts/` were refactored and improved with the assistance of AI (Claude), adding proper argument parsing, logging, input validation, and comprehensive documentation while preserving the original algorithmic logic.
+> The scripts in `bin/` were refactored and improved with the assistance of AI (Claude), adding proper argument parsing, logging, input validation, and comprehensive documentation while preserving the original algorithmic logic.
 
 ---
 
@@ -15,35 +16,38 @@ This repository contains standalone utility scripts covering RNA-seq, ChIP-seq, 
 
 ```
 myscripts/
-├── sequence_analysis/      # Sequence alignment, similarity networks, reverse complement
-├── codon_analysis/         # Codon/AA frequency, CAI, dN/dS, Kozak score
-├── format_conversion/      # GFF/GTF/BED/BAM format converters
-├── data_processing/        # File joining, transposition, general utilities
-├── gene_annotation/        # UTR extraction, intron filtering, MAF region extraction
-├── rnaseq/                 # DEG analysis, expression quantification, count merging
-├── data_retrieval/         # SRA/ENA/PRIDE downloading and metadata fetching
-├── enrichment/             # GO/KEGG enrichment analysis
-├── proteomics/             # MS/MS analysis, peptide properties, structure visualization
-├── visualization/          # Heatmaps, volcano, Manhattan, UpSet, gene structure plots
-└── ml_stats/               # Machine learning, statistics, clustering
+├── bin/                    # All executable scripts, flat — the only place to look
+├── config/
+│   ├── env.sh              # Unified environment / dependency configuration (committed defaults)
+│   └── env.local.sh        # Machine-specific overrides (optional, gitignored)
+├── archives/               # Original scripts preserved as archive
+└── README.md               # Script index — functional categories live here, not in directories
 ```
 
 ## Quick Start
 
 ```bash
+# One-time: put the toolkit on your PATH (add to ~/.bashrc)
+export PATH="$HOME/myscripts/bin:$PATH"
+
+# Optional: machine-specific configuration (NCBI email / API key, tool paths)
+#   edit  ~/myscripts/config/env.local.sh   (see Configuration below)
+
 # Python scripts — use argparse
-python myscripts/sequence_analysis/blast_align_analysis.py -h
+python bin/blast_align_analysis.py -h     # or just: blast_align_analysis.py -h (if on PATH)
 
 # R scripts — use getopt
-Rscript myscripts/rnaseq/deseq2_multigroup.R -h
+Rscript bin/deseq2_multigroup.R -h
 
 # Bash scripts — use getopts
-bash myscripts/format_conversion/bam_to_bigwig.sh -h
+bash bin/bam_to_bigwig.sh -h
 ```
 
 ---
 
 ## Scripts by Category
+
+> The functional categories below exist only in this index — every script itself lives flat in `bin/`. Usage examples assume `bin/` is on your `PATH`; otherwise prefix the script name with `bin/`.
 
 ### Sequence Analysis
 
@@ -484,7 +488,30 @@ bash batch_sanger_blast.sh -d database.fa -w work_dir/ -t 8 -o sanger_BLAST
 
 ---
 
+## Configuration
+
+All machine-dependent settings live in one place: `config/env.sh` (committed defaults) plus an optional, gitignored `config/env.local.sh` for private values. It is plain shell, so it can equally be sourced from shell profiles, cron or pipeline wrappers. Currently consumed variables:
+
+| Variable | Set where | Used by |
+|----------|-----------|---------|
+| `NCBI_EMAIL` | `env.local.sh` (recommended) | SRA/ENA fetch & search scripts (E-utilities contact) |
+| `NCBI_API_KEY` | `env.local.sh` (recommended) | SRA metadata fetch scripts (raises rate limits) |
+| `MYS_THREADS` | `env.sh` default | default thread count for scripts accepting `-t/--threads` |
+| `MYS_HOME` | set automatically | absolute path of this repository |
+
+Bash scripts load it with one line:
+
+```bash
+source "$(dirname "${BASH_SOURCE[0]}")/../config/env.sh"
+```
+
+Python and R scripts read the same variables from the environment (`os.environ`, `Sys.getenv`), so a single configuration serves every language. Script adoption of this convention is gradual — until a given script sources it, either export the variables in your shell profile or pass them as CLI options.
+
+---
+
 ## Dependencies
+
+Tool locations and shared defaults (NCBI credentials, thread counts, PATH additions) are configured once in `config/env.sh` / `config/env.local.sh` — see [Configuration](#configuration).
 
 ### Bioinformatics Tools
 | Tool | Purpose |

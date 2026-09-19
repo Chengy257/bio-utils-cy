@@ -1,6 +1,9 @@
 # Raw pre-rewrite script backup (published copies live in archives/)
 /raw_scritps/
 
+# Machine-specific configuration overrides
+/config/env.local.sh
+
 # Local duplicates of archived helper scripts
 /njoin.sh
 /transposition.sh
