@@ -1,0 +1,17 @@
+# Local-only archives and raw script backups (not part of the published repo)
+/raw_scritps/
+/archives/
+
+# Standalone helper scripts kept locally only
+/njoin.sh
+/transposition.sh
+
+# Tool/session working directories
+/.zcode/
+
+# Common noise
+__pycache__/
+*.pyc
+.DS_Store
+.Rhistory
+.RData
