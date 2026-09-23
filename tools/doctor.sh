@@ -57,7 +57,7 @@ REGISTRY=(
 )
 
 # Python packages imported by bin/*.py (import name)
-PY_PKGS=(Bio pandas numpy matplotlib networkx scipy tqdm lxml pyteomics)
+PY_PKGS=(Bio pandas numpy matplotlib networkx scipy sklearn community tqdm lxml pyteomics pybedtools markov_clustering)
 
 # R packages loaded by bin/*.R
 R_PKGS=(getopt ggplot2 Biostrings sangerseqR GenomicFeatures edgeR DESeq2

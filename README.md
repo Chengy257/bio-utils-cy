@@ -6,24 +6,11 @@ This repository contains standalone utility scripts covering RNA-seq, ChIP-seq, 
 
 - **`bin/`** — All executable scripts in one flat directory (Python / R / Bash), production quality with robust error handling, full CLI help, and consistent code style. Functional categories are documented in the index below, not in the file tree.
 - **`config/`** — Unified project-wide configuration shared by all scripts (see [Configuration](#configuration)).
+- **`tools/`** — Maintenance utilities: `doctor.sh` (dependency checks & path locator) and `smoke_test.sh` (CLI regression).
+- **`docs/`** — Reference material: per-script dependency matrix (`DEPENDENCIES.md`).
 - **`archives/`** — Original pre-rewrite scripts preserved as archive.
 
 > The scripts in `bin/` were refactored and improved with the assistance of AI (Claude), adding proper argument parsing, logging, input validation, and comprehensive documentation while preserving the original algorithmic logic.
-
----
-
-## Script Conventions
-
-Rules for new or modified scripts — keep the toolbox uniform:
-
-- **Location & permissions**: every executable lives flat in `bin/` with the executable bit set. Non-CLI shared code (if it ever appears) goes in `lib/`.
-- **Naming**: lowercase `snake_case`, verb-first (`plot_*`, `fetch_*`, `batch_*`, `calculate_*`); language is visible from the extension `.py` / `.R` / `.sh`.
-- **CLI**: Python → argparse; R → getopt; Bash → getopts. Every script must answer `-h` with a usage message and exit cleanly.
-- **Configuration**: bash scripts source `config/env.sh` (one line, see [Configuration](#configuration)). External tools are resolved through `mys_resolve_bin` with the fixed order: CLI option > `MYS_*_BIN` path variable > `PATH`. Never hardcode absolute tool paths in code.
-- **Logging**: Python `logging` to stderr; Bash `[INFO]/[WARN]/[ERROR]` prefixes to stderr; R `message()`.
-- **Exit codes**: `0` on success, non-zero on failure. Bash: `set -euo pipefail`. Python: `sys.exit(1)` on handled errors. R: `quit(status=1)`.
-- **Headers**: description + changelog comment block; no machine-specific absolute paths in code or comments.
-- **Regression**: run `tools/smoke_test.sh` after any change — every script must still pass its `-h`.
 
 ---
 
@@ -33,16 +20,16 @@ Rules for new or modified scripts — keep the toolbox uniform:
 myscripts/
 ├── bin/                    # All executable scripts, flat — the only place to look
 ├── config/
-│   ├── env.sh              # Unified environment / dependency configuration (committed defaults)
-│   ├── env.local.sh        # Machine-specific overrides (optional, gitignored — edit this one)
-│   └── env.local.sh.example# Template to copy when setting up a new machine
+│   ├── env.sh               # Unified environment / dependency configuration (committed defaults)
+│   ├── env.local.sh         # Machine-specific overrides (optional, gitignored — edit this one)
+│   └── env.local.sh.example # Template to copy when setting up a new machine
 ├── docs/
-│   └── DEPENDENCIES.md     # Per-script dependency matrix (tools / Python / R)
+│   └── DEPENDENCIES.md      # Per-script dependency matrix (tools / Python / R)
 ├── tools/
-│   ├── smoke_test.sh       # CLI regression: every script must answer -h
-│   └── doctor.sh           # Dependency checks, path locator, migration checklist
-├── archives/               # Original scripts preserved as archive
-└── README.md               # Script index — functional categories live here, not in directories
+│   ├── smoke_test.sh        # CLI regression: every script must answer -h
+│   └── doctor.sh            # Dependency checks, path locator, migration checklist
+├── archives/                # Original scripts preserved as archive
+└── README.md                # Script index — functional categories live here, not in directories
 ```
 
 ## Quick Start
@@ -541,7 +528,22 @@ tools/doctor.sh --migrate-check     # checklist of UNSET/BROKEN items (new-machi
 tools/smoke_test.sh                 # CLI regression: every script must answer -h
 ```
 
-Per-script dependency details: [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md). Script adoption of the config is incremental — a script that has not yet been wired reads only `PATH` and CLI options; `doctor` shows which slots are declared but unused.
+Per-script dependency details: [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md).
+
+---
+
+## Script Conventions
+
+Rules for new or modified scripts — keep the toolbox uniform:
+
+- **Location & permissions**: every executable lives flat in `bin/` with the executable bit set. Non-CLI shared code (if it ever appears) goes in `lib/`.
+- **Naming**: lowercase `snake_case`, verb-first (`plot_*`, `fetch_*`, `batch_*`, `calculate_*`); language is visible from the extension `.py` / `.R` / `.sh`.
+- **CLI**: Python → argparse; R → getopt; Bash → getopts. Every script must answer `-h` with a usage message and exit cleanly.
+- **Configuration**: bash scripts source `config/env.sh` (one line, see [Configuration](#configuration)). External tools are resolved through `mys_resolve_bin` (Python: an equivalent `resolve_tool` helper) with the fixed order: CLI option > `MYS_*_BIN` path variable > `PATH`. Never hardcode absolute tool paths in code.
+- **Logging**: Python `logging` to stderr; Bash `[INFO]/[WARN]/[ERROR]` prefixes to stderr; R `message()`.
+- **Exit codes**: `0` on success, non-zero on failure. Bash: `set -euo pipefail`. Python: `sys.exit(1)` on handled errors. R: `quit(status=1)`.
+- **Headers**: description + changelog comment block; no machine-specific absolute paths in code or comments.
+- **Regression**: run `tools/smoke_test.sh` after any change — every script must still pass its `-h`.
 
 ---
 
@@ -550,24 +552,13 @@ Per-script dependency details: [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md). Scr
 Per-script requirements are mapped in [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md); tool locations are pinned once in `config/env.local.sh` — see [Configuration](#configuration). Verify the current machine with `tools/doctor.sh`.
 
 ### Bioinformatics Tools
-| Tool | Purpose |
-|------|---------|
-| STAR / HISAT2 / bowtie2 | Read alignment |
-| featureCounts / StringTie | Quantification |
-| MACS2 | Peak calling |
-| FastQC / MultiQC / Trim Galore | Quality control |
-| BLAST+ | Sequence similarity |
-| SAMtools / deepTools | BAM processing |
-| DSSP | Secondary structure |
-| PyMOL / ChimeraX | Structure visualization |
-| PLINK / VCFTools | Variant analysis |
-| Aspera ascp | High-speed data transfer |
+sra-tools (prefetch / fasterq-dump / fastq-dump) · GNU parallel · Aspera ascp · BLAST+ (blastn / blastp / makeblastdb) · SAMtools · subread featureCounts · RSeQC (infer_experiment.py) · deepTools (bamCoverage) · UCSC utils (gtf2bed / gff2bed) · bedtools · PLINK / VCFTools · DSSP (mkdssp) · PyMOL · ChimeraX · wget
 
 ### Python Packages
-Biopython, pandas, numpy, matplotlib, networkx, tqdm, pyteomics
+biopython, pandas, numpy, matplotlib, networkx, scipy, scikit-learn, python-louvain, tqdm, lxml, pyteomics, pybedtools, markov-clustering
 
 ### R / Bioconductor Packages
-DESeq2, clusterProfiler, ComplexHeatmap, ggplot2, rtracklayer, Mfuzz, sangerseqR, UpSetR, qqman, GOSemSim, ggtree
+DESeq2, edgeR, clusterProfiler, GOSemSim, aPEAR, ComplexHeatmap, circlize, ggplot2, ggsci, cowplot, patchwork, aplot, ggtree, Gviz, plotrix, GenomicFeatures, GenomicRanges, rtracklayer, Biostrings, sangerseqR, Mfuzz, Biobase, BiocParallel, gplots, RColorBrewer, amap, magrittr, UpSetR, qqman, data.table, dplyr, ape, getopt — full per-script matrix in [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md)
 
 ---
 

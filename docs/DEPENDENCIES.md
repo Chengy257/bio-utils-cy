@@ -10,8 +10,8 @@ Legend: **Tools** = external executables · **Py** = Python packages (import nam
 |--------|-------|----|
 | `blast_align_analysis.py` | blastn, blastp | Bio, pandas |
 | `aligned_fasta_similarity.py` | — | Bio, pandas |
-| `sequence_similarity_network.py` | — | Bio, matplotlib, networkx, numpy, scipy |
-| `blast_sequence_network.py` | blastp, makeblastdb | Bio, matplotlib, networkx, numpy |
+| `sequence_similarity_network.py` | — | Bio, matplotlib, networkx, scipy, sklearn, community (python-louvain) |
+| `blast_sequence_network.py` | blastp, makeblastdb | Bio, matplotlib, markov_clustering, networkx, numpy |
 | `reverse_complement.py` | — | — |
 | `sequence_complexity.py` | — | Bio |
 
@@ -33,7 +33,7 @@ Legend: **Tools** = external executables · **Py** = Python packages (import nam
 | `genome_format_converter.sh` | gtf2bed, gff2bed; UCSC kent utils gff2gtf, gtfToGenePred, gff3ToGenePred, genePredToBed (see note) | — |
 | `gtf_standardize.sh` | — (self-contained awk) | — |
 | `bam_to_bigwig.sh` | samtools, bamCoverage (deepTools) | — |
-| `bed12_effective_length.py` | bedtools | — |
+| `bed12_effective_length.py` | bedtools (via pybedtools) | pybedtools |
 | `fasta_to_alphafold_json.py` | — | — |
 
 > **Note (this machine):** `gtf2bed`/`gff2bed` are pinned in `config/env.local.sh`. The kent utilities `gff2gtf`, `gtfToGenePred`, `gff3ToGenePred`, `genePredToBed` are **not installed** — the `gff2gtf`, `gtf2gp`, `gp2bed` modes of `genome_format_converter.sh` are unavailable until they are provided (install kent-utils, then pass paths via the script's own options).
@@ -136,6 +136,6 @@ Legend: **Tools** = external executables · **Py** = Python packages (import nam
 ## Summary: machine-level requirements
 
 - **External tools** (21): prefetch, fasterq-dump, fastq-dump, fastqc, parallel, ascp, blastn, blastp, makeblastdb, mkdssp, pymol, ChimeraX, plink, vcftools, featureCounts, samtools, infer_experiment.py, bedtools, bamCoverage, gtf2bed, gff2bed — pin each in `config/env.local.sh`.
-- **Python** (9): biopython, pandas, numpy, matplotlib, networkx, scipy, tqdm, lxml, pyteomics.
+- **Python** (13): biopython, pandas, numpy, matplotlib, networkx, scipy, scikit-learn, community (python-louvain), tqdm, lxml, pyteomics, pybedtools, markov-clustering.
 - **R** (33): see tables above — the Rscript interpreter and library path come from `MYS_RSCRIPT_BIN` / `MYS_R_LIBS`.
 - **Credentials**: `NCBI_EMAIL`, `NCBI_API_KEY` for NCBI E-utilities scripts.
