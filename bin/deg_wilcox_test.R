@@ -6,12 +6,11 @@
 #              with TMM normalization (suitable for population data).
 # Created Time: 2026
 #########################################################################
-"""Differential expression using Wilcoxon rank-sum test.
-
-TMM-normalizes counts, then applies Wilcoxon rank-sum test per gene
-between two conditions. Suitable for population-level studies where
-negative binomial assumptions may not hold.
-"""
+# Differential expression using Wilcoxon rank-sum test.
+#
+# TMM-normalizes counts, then applies Wilcoxon rank-sum test per gene
+# between two conditions. Suitable for population-level studies where
+# negative binomial assumptions may not hold.
 
 suppressMessages(library(edgeR))
 suppressMessages(library(getopt))

@@ -6,11 +6,10 @@
 #              single-column data file.
 # Created Time: 2026
 #########################################################################
-"""Append sequential numbers to duplicate values.
-
-For each unique value in the input column, appends _1, _2, _3, etc.
-to duplicates, preserving the original row order.
-"""
+# Append sequential numbers to duplicate values.
+#
+# For each unique value in the input column, appends _1, _2, _3, etc.
+# to duplicates, preserving the original row order.
 
 args <- commandArgs(trailingOnly = TRUE)
 

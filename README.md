@@ -34,7 +34,13 @@ myscripts/
 ├── bin/                    # All executable scripts, flat — the only place to look
 ├── config/
 │   ├── env.sh              # Unified environment / dependency configuration (committed defaults)
-│   └── env.local.sh        # Machine-specific overrides (optional, gitignored)
+│   ├── env.local.sh        # Machine-specific overrides (optional, gitignored — edit this one)
+│   └── env.local.sh.example# Template to copy when setting up a new machine
+├── docs/
+│   └── DEPENDENCIES.md     # Per-script dependency matrix (tools / Python / R)
+├── tools/
+│   ├── smoke_test.sh       # CLI regression: every script must answer -h
+│   └── doctor.sh           # Dependency checks, path locator, migration checklist
 ├── archives/               # Original scripts preserved as archive
 └── README.md               # Script index — functional categories live here, not in directories
 ```
@@ -45,8 +51,10 @@ myscripts/
 # One-time: put the toolkit on your PATH (add to ~/.bashrc)
 export PATH="$HOME/myscripts/bin:$PATH"
 
-# Optional: machine-specific configuration (NCBI email / API key, tool paths)
-#   edit  ~/myscripts/config/env.local.sh   (see Configuration below)
+# One-time per machine: dependency configuration
+#   cp config/env.local.sh.example config/env.local.sh   then fill in tool paths
+#   (use  tools/doctor.sh --locate <tool>  to find candidates on this machine)
+tools/doctor.sh                     # verify — everything OK / PATH / UNSET is listed
 
 # Python scripts — use argparse
 python bin/blast_align_analysis.py -h     # or just: blast_align_analysis.py -h (if on PATH)
@@ -505,28 +513,41 @@ bash batch_sanger_blast.sh -d database.fa -w work_dir/ -t 8 -o sanger_BLAST
 
 ## Configuration
 
-All machine-dependent settings live in one place: `config/env.sh` (committed defaults) plus an optional, gitignored `config/env.local.sh` for private values. It is plain shell, so it can equally be sourced from shell profiles, cron or pipeline wrappers. Currently consumed variables:
+All machine-dependent settings live in one place: `config/env.local.sh` (copy from `config/env.local.sh.example`; gitignored, never leaves the machine). `config/env.sh` holds the committed defaults and the `mys_resolve_bin` helper. Every value is a **path** — there is no environment activation in this mechanism; conda-installed binaries are self-contained and work when called by absolute path.
 
-| Variable | Set where | Used by |
-|----------|-----------|---------|
-| `NCBI_EMAIL` | `env.local.sh` (recommended) | SRA/ENA fetch & search scripts (E-utilities contact) |
-| `NCBI_API_KEY` | `env.local.sh` (recommended) | SRA metadata fetch scripts (raises rate limits) |
-| `MYS_THREADS` | `env.sh` default | default thread count for scripts accepting `-t/--threads` |
-| `MYS_HOME` | set automatically | absolute path of this repository |
+Tool resolution follows one fixed order, everywhere:
 
-Bash scripts load it with one line:
-
-```bash
-source "$(dirname "${BASH_SOURCE[0]}")/../config/env.sh"
+```
+CLI option  >  MYS_*_BIN path variable  >  PATH  >  error (+ hint to run tools/doctor.sh)
 ```
 
-Python and R scripts read the same variables from the environment (`os.environ`, `Sys.getenv`), so a single configuration serves every language. Script adoption of this convention is gradual — until a given script sources it, either export the variables in your shell profile or pass them as CLI options.
+Consumed variables:
+
+| Variable | Used by |
+|----------|---------|
+| `NCBI_EMAIL`, `NCBI_API_KEY` | SRA/ENA fetch & search scripts (E-utilities contact / rate limits) |
+| `MYS_THREADS` | default thread count for scripts accepting `-t/--threads` |
+| `MYS_PYTHON_BIN`, `MYS_RSCRIPT_BIN`, `MYS_R_LIBS` | interpreters and R package library (exported as `R_LIBS`) |
+| `MYS_PREFETCH_BIN`, `MYS_FASTERQ_DUMP_BIN`, `MYS_FASTQ_DUMP_BIN`, … | one slot per external tool — see `config/env.local.sh.example` for the full list |
+| `MYS_EXTRA_PATH` | escape hatch: directories prepended to PATH for scripts that look up companion binaries by name |
+| `MYS_HOME` | set automatically (repository root) |
+
+Maintenance commands:
+
+```bash
+tools/doctor.sh                     # validate everything: tool paths + Python + R packages
+tools/doctor.sh --locate ascp       # scan candidate paths, print a ready-to-paste config line
+tools/doctor.sh --migrate-check     # checklist of UNSET/BROKEN items (new-machine setup)
+tools/smoke_test.sh                 # CLI regression: every script must answer -h
+```
+
+Per-script dependency details: [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md). Script adoption of the config is incremental — a script that has not yet been wired reads only `PATH` and CLI options; `doctor` shows which slots are declared but unused.
 
 ---
 
 ## Dependencies
 
-Tool locations and shared defaults (NCBI credentials, thread counts, PATH additions) are configured once in `config/env.sh` / `config/env.local.sh` — see [Configuration](#configuration).
+Per-script requirements are mapped in [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md); tool locations are pinned once in `config/env.local.sh` — see [Configuration](#configuration). Verify the current machine with `tools/doctor.sh`.
 
 ### Bioinformatics Tools
 | Tool | Purpose |

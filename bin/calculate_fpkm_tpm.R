@@ -6,11 +6,10 @@
 #              effective gene lengths from GTF.
 # Created Time: 2026
 #########################################################################
-"""Calculate FPKM and TPM from STAR gene-level counts.
-
-Reads a STAR ReadsPerGene.out.tab file and GTF annotation, computes
-non-redundant exon lengths, then calculates FPKM and TPM values.
-"""
+# Calculate FPKM and TPM from STAR gene-level counts.
+#
+# Reads a STAR ReadsPerGene.out.tab file and GTF annotation, computes
+# non-redundant exon lengths, then calculates FPKM and TPM values.
 
 suppressMessages(library(GenomicFeatures))
 suppressMessages(library(parallel))

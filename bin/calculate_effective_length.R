@@ -5,11 +5,10 @@
 # Description: Calculate non-redundant exon length per gene from GTF.
 # Created Time: 2026
 #########################################################################
-"""Calculate non-redundant exon length per gene from GTF.
-
-Overlapping exons within each gene are merged (reduced) before summing,
-giving the effective genomic length used for TPM/FPKM calculations.
-"""
+# Calculate non-redundant exon length per gene from GTF.
+#
+# Overlapping exons within each gene are merged (reduced) before summing,
+# giving the effective genomic length used for TPM/FPKM calculations.
 
 suppressMessages(library(GenomicFeatures))
 suppressMessages(library(parallel))

@@ -6,12 +6,11 @@
 #              comparisons with optional batch correction.
 # Created Time: 2026
 #########################################################################
-"""DESeq2 multi-group differential expression analysis.
-
-Performs DESeq2 analysis with all-vs-control pairwise comparisons.
-Generates normalized counts, heatmaps, PCA plots, volcano plots,
-and MA plots. Supports optional batch effect correction.
-"""
+# DESeq2 multi-group differential expression analysis.
+#
+# Performs DESeq2 analysis with all-vs-control pairwise comparisons.
+# Generates normalized counts, heatmaps, PCA plots, volcano plots,
+# and MA plots. Supports optional batch effect correction.
 
 pkgs <- c("DESeq2", "ggplot2", "BiocParallel", "gplots", "RColorBrewer", "amap", "getopt")
 for (pkg in pkgs) {

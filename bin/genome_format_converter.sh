@@ -60,6 +60,13 @@ find_tool() {
         echo "${explicit}"
         return
     fi
+    # Config-provided path (MYS_<TOOL>_BIN from config/env.sh) beats PATH
+    local slot_var="MYS_$(printf '%s' "${tool_name}" | tr 'a-z' 'A-Z' | tr '-' '_')_BIN"
+    local slot_val="${!slot_var:-}"
+    if [[ -n "${slot_val}" && -x "${slot_val}" ]]; then
+        echo "${slot_val}"
+        return
+    fi
     local found
     found=$(command -v "${tool_name}" 2>/dev/null) || true
     if [[ -n "${found}" ]]; then
