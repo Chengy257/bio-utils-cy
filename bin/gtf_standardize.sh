@@ -12,6 +12,11 @@
 
 set -euo pipefail
 
+# --- unified project configuration (paths/defaults; no-op if missing) ---
+_my_conf="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../config/env.sh"
+if [ -f "${_my_conf}" ]; then . "${_my_conf}"; fi
+unset -v _my_conf
+
 # Default configuration
 DEFAULT_ATTRS="gene_id,transcript_id,gene_name,exon_number,gene_biotype,protein_id"
 OUTPUT_SUFFIX=".standardized.gtf"

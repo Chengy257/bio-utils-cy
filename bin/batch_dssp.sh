@@ -8,6 +8,11 @@
 
 set -euo pipefail
 
+# --- unified project configuration (paths/defaults; no-op if missing) ---
+_my_conf="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../config/env.sh"
+if [ -f "${_my_conf}" ]; then . "${_my_conf}"; fi
+unset -v _my_conf
+
 VERSION="1.0.0"
 
 usage() {

@@ -35,6 +35,11 @@
 #   - Exit code 2 if any accession failed.
 # ==============================================================================
 set -euo pipefail
+
+# --- unified project configuration (paths/defaults; no-op if missing) ---
+_my_conf="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../config/env.sh"
+if [ -f "${_my_conf}" ]; then . "${_my_conf}"; fi
+unset -v _my_conf
 shopt -s nullglob
 
 readonly SCRIPT_NAME="$(basename "$0")"
