@@ -1,6 +1,9 @@
 # Raw pre-rewrite script backup (published copies live in archives/)
 /raw_scritps/
 
+# Superseded / pre-rewrite scripts — local only, not part of the repository
+/archives/
+
 # Machine-specific configuration overrides
 /config/env.local.sh
 

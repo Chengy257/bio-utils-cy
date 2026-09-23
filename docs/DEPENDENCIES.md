@@ -71,21 +71,17 @@ Legend: **Tools** = external executables · **Py** = Python packages (import nam
 
 ## Data Retrieval
 
+> Eight scripts after consolidation — one per database and function. Superseded variants (the batch ENA download wrapper, per-variant NCBI fetchers, the PRIDE JSON parser, and the BioProject filereport shell wrapper) live in the local `archives/`.
+
 | Script | Tools | Py | Credentials |
 |--------|-------|----|-------------|
 | `sra_prefetch_batch.sh` | prefetch, fasterq-dump / fastq-dump, parallel, fastqc (optional) | — | — |
 | `ena_ascp_download.py` | ascp | — | — |
-| `ena_ascp_download_batch.sh` | ascp | — | — |
 | `fetch_sra_metadata_ncbi.py` | — (HTTPS) | — | NCBI_EMAIL, NCBI_API_KEY |
 | `fetch_sra_metadata_ena.py` | — (HTTPS) | — | — |
-| `fetch_sra_metadata_comprehensive.py` | — (HTTPS) | — | NCBI_EMAIL, NCBI_API_KEY |
-| `fetch_sra_metadata_xml.py` | — (HTTPS) | — | NCBI_EMAIL, NCBI_API_KEY |
-| `format_sra_summary.py` | — | — | — |
-| `fetch_bioproject_metadata.sh` | wget | — | — |
-| `fetch_pride_metadata.py` | — (HTTPS) | — | — |
-| `parse_pride_json.py` | — | — | — |
+| `pride_metadata.py` | — (HTTPS for `fetch`) | — | — |
 | `search_sra_riboseq.py` | — (HTTPS) | Bio, tqdm | NCBI_EMAIL, NCBI_API_KEY |
-| `search_riboseq_bioproject.py` | — (HTTPS) | Bio | NCBI_EMAIL, NCBI_API_KEY |
+| `format_sra_summary.py` | — | — | — |
 | `extract_species_rna_rfam.sh` | — | — | — |
 
 ## Enrichment

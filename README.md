@@ -8,7 +8,7 @@ This repository contains standalone utility scripts covering RNA-seq, ChIP-seq, 
 - **`config/`** — Unified project-wide configuration shared by all scripts (see [Configuration](#configuration)).
 - **`tools/`** — Maintenance utilities: `doctor.sh` (dependency checks & path locator) and `smoke_test.sh` (CLI regression).
 - **`docs/`** — Reference material: per-script dependency matrix (`DEPENDENCIES.md`).
-- **`archives/`** — Original pre-rewrite scripts preserved as archive.
+- **`archives/`** — Superseded and pre-rewrite scripts; kept locally only, **not tracked** in this repository.
 
 > The scripts in `bin/` were refactored and improved with the assistance of AI (Claude), adding proper argument parsing, logging, input validation, and comprehensive documentation while preserving the original algorithmic logic.
 
@@ -28,7 +28,7 @@ bio-utils-cy/
 ├── tools/
 │   ├── smoke_test.sh        # CLI regression: every script must answer -h
 │   └── doctor.sh            # Dependency checks, path locator, migration checklist
-├── archives/                # Original scripts preserved as archive
+├── archives/                # Superseded / pre-rewrite scripts — local only, not tracked
 └── README.md                # Script index — functional categories live here, not in directories
 ```
 
@@ -285,23 +285,17 @@ python filter_expression.py -i expr.tsv -o filtered.tsv --min_expr 5 --min_sampl
 
 ### Data Retrieval
 
-> Download and fetch metadata from NCBI SRA, ENA, and PRIDE databases.
+> Download and fetch metadata from NCBI SRA, ENA, and PRIDE databases — one script per database and function.
 
 | Script | Language | Description |
 |--------|----------|-------------|
 | `sra_prefetch_batch.sh` | Bash | Batch download FASTQ from NCBI SRA |
-| `ena_ascp_download.py` | Python | Download FASTQ from ENA using Aspera ascp |
-| `ena_ascp_download_batch.sh` | Bash | Batch ENA Aspera download by accession |
-| `fetch_sra_metadata_ncbi.py` | Python | SRA metadata from NCBI Entrez E-Utilities |
-| `fetch_sra_metadata_ena.py` | Python | SRA metadata from ENA filereport API |
-| `fetch_sra_metadata_comprehensive.py` | Python | Comprehensive SRA metadata via NCBI |
-| `fetch_sra_metadata_xml.py` | Python | SRA metadata combining RunInfo CSV + XML |
-| `format_sra_summary.py` | Python | Format SRA metadata into standardized summary |
-| `fetch_bioproject_metadata.sh` | Bash | BioProject metadata from ENA |
-| `fetch_pride_metadata.py` | Python | PRIDE proteomics dataset metadata |
-| `parse_pride_json.py` | Python | Parse PRIDE JSON metadata into tables |
-| `search_sra_riboseq.py` | Python | Search NCBI for Ribo-seq data by species |
-| `search_riboseq_bioproject.py` | Python | Multi-layer Ribo-seq BioProject retrieval |
+| `ena_ascp_download.py` | Python | Download FASTQ from ENA using Aspera ascp (single accession or list file) |
+| `fetch_sra_metadata_ncbi.py` | Python | SRA metadata from NCBI: RunInfo + BioSample + Experiment, merged |
+| `fetch_sra_metadata_ena.py` | Python | SRA metadata from the ENA filereport API (run or project accessions) |
+| `pride_metadata.py` | Python | PRIDE metadata: `fetch` from the PRIDE API / `parse` local PRIDE JSON files |
+| `search_sra_riboseq.py` | Python | Search NCBI for Ribo-seq BioProjects and runs by species/TaxID |
+| `format_sra_summary.py` | Python | Format SRA metadata into a standardized summary |
 | `extract_species_rna_rfam.sh` | Bash | Extract species RNA from Rfam database |
 
 <details>
@@ -311,38 +305,32 @@ python filter_expression.py -i expr.tsv -o filtered.tsv --min_expr 5 --min_sampl
 # SRA batch download
 bash sra_prefetch_batch.sh -i srr_list.txt -d ./fastq -t 4
 
-# ENA Aspera download
+# ENA Aspera download — single accession or a list file
 python ena_ascp_download.py -i SRR1234567 -o ./fastq -t 8
-bash ena_ascp_download_batch.sh -i accession_list.txt -o ./download
+python ena_ascp_download.py -i accession_list.txt -o ./download
 
-# NCBI SRA metadata
-python fetch_sra_metadata_ncbi.py -i srr_list.txt -o metadata.tsv -e user@email.com
+# NCBI SRA metadata (merged RunInfo + BioSample + Experiment)
+python fetch_sra_metadata_ncbi.py --input-file ids.txt --output-dir ./meta --email user@email.com
 
-# ENA SRA metadata
+# ENA metadata — run (SRR/ERR/DRR) or project (PRJ/ERP/DRP) accessions
 python fetch_sra_metadata_ena.py -i accessions.txt -o metadata.tsv
+
+# PRIDE metadata — fetch from the API, or parse saved JSON files
+python pride_metadata.py fetch -i pxd_list.txt -o pride_metadata.tsv
+python pride_metadata.py parse ./pride_jsons/ -o results.csv
+
+# Ribo-seq search (BioProject layer + linked runs)
+python search_sra_riboseq.py --species "Oryza sativa" --output-dir results/
 
 # Format SRA summary
 python format_sra_summary.py --input metadata.tsv --output summary.tsv
-
-# BioProject metadata
-bash fetch_bioproject_metadata.sh -i bioproject_list.txt -o metadata/
-
-# PRIDE metadata
-python fetch_pride_metadata.py -i pxd_list.txt -o pride_metadata.tsv
-
-# Parse PRIDE JSON
-python parse_pride_json.py ./pride_jsons/ -o results.csv
-
-# Ribo-seq SRA search
-python search_sra_riboseq.py --species "Oryza sativa" --output-dir results/
-
-# Ribo-seq BioProject retrieval
-python search_riboseq_bioproject.py -s "Arabidopsis thaliana" -o results.csv
 
 # Rfam species RNA extraction
 bash extract_species_rna_rfam.sh -i rfam_dir/ -a family.txt -o output/ "Oryza sativa"
 ```
 </details>
+
+> Consolidation note: `ena_ascp_download_batch.sh`, `fetch_bioproject_metadata.sh`, `fetch_sra_metadata_xml.py`, the former E-utilities-package `fetch_sra_metadata_ncbi.py`, `fetch_pride_metadata.py` + `parse_pride_json.py`, and `search_riboseq_bioproject.py` were folded into the eight scripts above (superseded copies are kept in the local `archives/`, which is not tracked in this repository).
 
 ---
 

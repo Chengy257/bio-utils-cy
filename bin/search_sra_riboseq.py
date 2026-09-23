@@ -445,7 +445,7 @@ class NCBISearcher:
 
         # BioProject summary TSV
         bp_file = output_dir / "bioprojects_summary.tsv"
-        fieldnames = ["BioProjectID", "Accession", "Title", "Organism", "SRR_Count", "ReleaseDate"]
+        fieldnames = ["BioProjectID", "Accession", "Title", "Organism", "Description", "SRR_Count", "ReleaseDate"]
         with open(bp_file, "w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=fieldnames, delimiter="\t")
             writer.writeheader()
@@ -455,6 +455,7 @@ class NCBISearcher:
                     "Accession": bp.get("Accession", ""),
                     "Title": bp.get("Title", ""),
                     "Organism": bp.get("Organism", ""),
+                    "Description": bp.get("Description", ""),
                     "SRR_Count": bp["SRR_Count"],
                     "ReleaseDate": bp.get("ReleaseDate", ""),
                 })

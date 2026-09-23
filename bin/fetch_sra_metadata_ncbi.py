@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-# ==============================================================================
-# File Name:    fetch_sra_metadata_ncbi.py
-# Author:       ChengYu
-# Description:  Fetch SRA metadata from NCBI by batch-querying SRR accession
-#               IDs via the Entrez E-Utilities API, parsing the returned
-#               EXPERIMENT_PACKAGE XML, and extracting sample attributes into
-#               a structured TSV/CSV report.
-# Created Time: 2026
-# ==============================================================================
+"""
+File Name: fetch_sra_metadata_comprehensive.py
+Author: ChengYu
+Description: Three-step comprehensive SRA metadata retrieval:
+             RunInfo -> BioSample -> Experiment from NCBI.
+             Fetches metadata in batches, merges results into a single TSV.
+Created Time: 2026
+"""
 
 from __future__ import annotations
 
@@ -18,657 +17,506 @@ import os
 import sys
 import time
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Optional, Set, TextIO
+from typing import Any, Dict, List, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-__version__ = "2.0.0"
+__version__ = "1.0.0"
 
-logger = logging.getLogger("fetch_sra_metadata_ncbi")
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
+NCBI_EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 DEFAULT_BATCH_SIZE = 50
-DEFAULT_THREADS = 1
-DEFAULT_RATE_LIMIT = 0.5  # seconds between API calls
-NCBI_EFETCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
-NCBI_ESRCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+DEFAULT_TIMEOUT = 120
+DEFAULT_RETRY_DELAY = 3.0
+DEFAULT_MAX_RETRIES = 3
 
-# Fields that are always extracted
-CORE_FIELDS = [
-    "accession",
-    "experiment_accession",
-    "sample_accession",
-    "study_accession",
-    "run_alias",
-    "sample_alias",
-    "experiment_alias",
-    "instrument_model",
-    "library_strategy",
-    "library_source",
-    "library_selection",
-    "library_layout",
-    "spots",
-    "bases",
-    "avg_length",
-    "biosample",
-    "bioproject",
-    "center_name",
-    "tax_id",
-    "scientific_name",
-]
-
-# Default metadata output fields
-DEFAULT_OUTPUT_FIELDS = CORE_FIELDS + ["sample_attributes"]
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# NCBI API helpers
+# Utility helpers
 # ---------------------------------------------------------------------------
-def esearch_sra(
-    term: str,
-    email: str,
-    retmax: int = 10000,
-    api_key: Optional[str] = None,
-    timeout: int = 30,
-) -> List[str]:
-    """Search NCBI SRA via ESearch and return a list of accession IDs.
 
-    Parameters
-    ----------
-    term : str
-        Entrez search term, e.g. a study accession or free text.
-    email : str
-        Email address (required by NCBI policy).
-    retmax : int
-        Maximum number of UIDs to return.
-    api_key : str or None
-        NCBI API key for higher rate limits.
-    timeout : int
-        HTTP request timeout in seconds.
+def _fetch_url(url: str, timeout: int = DEFAULT_TIMEOUT) -> str:
+    """Fetch content from a URL.
 
-    Returns
-    -------
-    list[str]
-        List of SRA Run accession strings.
+    Args:
+        url: The URL to request.
+        timeout: Request timeout in seconds.
 
-    Raises
-    ------
-    RuntimeError
-        If the ESearch response cannot be parsed.
+    Returns:
+        Response body as a decoded string.
+
+    Raises:
+        RuntimeError: On any fetch failure.
     """
-    params: Dict[str, str] = {
-        "db": "sra",
-        "term": term,
-        "retmax": str(retmax),
-        "usehistory": "n",
-        "retmode": "json",
-        "email": email,
-        "tool": "fetch_sra_metadata_ncbi",
-    }
-    if api_key:
-        params["api_key"] = api_key
-
-    url = f"{NCBI_ESRCH_URL}?{urlencode(params)}"
-    logger.info("ESearch: %s", term)
-
-    import json as _json
-
+    logger.debug("Fetching: %s", url)
     req = Request(url)
-    req.add_header("User-Agent", "fetch_sra_metadata_ncbi/2.0")
     try:
         with urlopen(req, timeout=timeout) as resp:
-            data = _json.loads(resp.read().decode())
-    except (URLError, _json.JSONDecodeError) as exc:
-        raise RuntimeError(f"ESearch failed: {exc}") from exc
+            charset = resp.headers.get_content_charset() or "utf-8"
+            return resp.read().decode(charset)
+    except HTTPError as exc:
+        raise RuntimeError(f"HTTP {exc.code} fetching {url}: {exc.reason}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"URL error fetching {url}: {exc}") from exc
 
-    ids = data.get("esearchresult", {}).get("idlist", [])
-    logger.info("ESearch returned %d UID(s)", len(ids))
+
+def _fetch_with_retry(
+    url: str,
+    timeout: int = DEFAULT_TIMEOUT,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    retry_delay: float = DEFAULT_RETRY_DELAY,
+) -> str:
+    """Fetch a URL with exponential-backoff retries.
+
+    Args:
+        url: URL to fetch.
+        timeout: Per-request timeout in seconds.
+        max_retries: Maximum number of attempts.
+        retry_delay: Base delay in seconds between retries.
+
+    Returns:
+        Decoded response text.
+
+    Raises:
+        RuntimeError: If all retries are exhausted.
+    """
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            return _fetch_url(url, timeout=timeout)
+        except RuntimeError as exc:
+            last_exc = exc
+            logger.warning("Attempt %d/%d failed: %s", attempt, max_retries, exc)
+            if attempt < max_retries:
+                sleep = retry_delay * (2 ** (attempt - 1))
+                logger.info("Retrying in %.1f s ...", sleep)
+                time.sleep(sleep)
+    raise RuntimeError(f"All {max_retries} retries exhausted. Last: {last_exc}")
+
+
+def _read_ids(path: str) -> List[str]:
+    """Read IDs from a file, one per line, skipping blanks and comments.
+
+    Args:
+        path: Path to the text file.
+
+    Returns:
+        List of ID strings.
+    """
+    ids: List[str] = []
+    with open(path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            token = line.strip()
+            if token and not token.startswith("#"):
+                ids.append(token)
     return ids
 
 
-def efetch_sra_xml(
-    run_ids: List[str],
-    email: str,
+# ---------------------------------------------------------------------------
+# Step 1: RunInfo
+# ---------------------------------------------------------------------------
+
+def fetch_runinfo(
+    srr_ids: List[str],
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    timeout: int = DEFAULT_TIMEOUT,
     api_key: Optional[str] = None,
-    timeout: int = 120,
-) -> str:
-    """Fetch SRA run metadata as XML via EFetch.
-
-    Parameters
-    ----------
-    run_ids : list[str]
-        List of SRA Run accessions or UIDs.
-    email : str
-        Email for NCBI policy.
-    api_key : str or None
-        Optional NCBI API key.
-    timeout : int
-        HTTP request timeout in seconds.
-
-    Returns
-    -------
-    str
-        Raw XML response string.
-
-    Raises
-    ------
-    RuntimeError
-        If the request fails.
-    """
-    params: Dict[str, str] = {
-        "db": "sra",
-        "id": ",".join(run_ids),
-        "rettype": "full",
-        "retmode": "xml",
-        "email": email,
-        "tool": "fetch_sra_metadata_ncbi",
-    }
-    if api_key:
-        params["api_key"] = api_key
-
-    url = f"{NCBI_EFETCH_URL}?{urlencode(params)}"
-    logger.debug("EFetch URL: %s", url)
-
-    req = Request(url)
-    req.add_header("User-Agent", "fetch_sra_metadata_ncbi/2.0")
-    try:
-        with urlopen(req, timeout=timeout) as resp:
-            return resp.read().decode()
-    except (URLError, HTTPError) as exc:
-        raise RuntimeError(f"EFetch failed for batch: {exc}") from exc
-
-
-# ---------------------------------------------------------------------------
-# XML parsing
-# ---------------------------------------------------------------------------
-def _text(elem: ET.Element, tag: str) -> str:
-    """Extract text from a child element, returning empty string if absent."""
-    child = elem.find(tag)
-    if child is not None and child.text:
-        return child.text.strip()
-    return ""
-
-
-def _findtext_recursive(elem: ET.Element, tag: str) -> str:
-    """Find the first descendant matching *tag* and return its text."""
-    found = elem.find(f".//{tag}")
-    if found is not None and found.text:
-        return found.text.strip()
-    return ""
-
-
-def parse_experiment_package(pkg: ET.Element) -> Dict[str, str]:
-    """Parse a single EXPERIMENT_PACKAGE element into a flat dict.
-
-    Parameters
-    ----------
-    pkg : xml.etree.ElementTree.Element
-        An ``<EXPERIMENT_PACKAGE>`` element.
-
-    Returns
-    -------
-    dict[str, str]
-        Flat dictionary with standardised field names.
-    """
-    row: Dict[str, str] = {}
-
-    # --- EXPERIMENT ---
-    exp = pkg.find("EXPERIMENT")
-    if exp is not None:
-        row["experiment_accession"] = exp.get("accession", "")
-        row["experiment_alias"] = exp.get("alias", "")
-        row["center_name"] = exp.get("center_name", "")
-
-        # Descriptor
-        desc = exp.find("DESIGN/DESIGN_DESCRIPTOR")
-        if desc is not None:
-            row["library_strategy"] = _text(desc, "LIBRARY_STRATEGY")
-            row["library_source"] = _text(desc, "LIBRARY_SOURCE")
-            row["library_selection"] = _text(desc, "LIBRARY_SELECTION")
-
-        # Library layout
-        layout = exp.find("DESIGN/LIBRARY_DESCRIPTOR/LIBRARY_LAYOUT")
-        if layout is not None:
-            if layout.find("SINGLE") is not None:
-                row["library_layout"] = "SINGLE"
-            elif layout.find("PAIRED") is not None:
-                row["library_layout"] = "PAIRED"
-            else:
-                row["library_layout"] = ""
-
-        # Instrument
-        plat = exp.find("PLATFORM")
-        if plat is not None:
-            for child in plat:
-                row["instrument_model"] = _text(child, "INSTRUMENT_MODEL")
-                if row["instrument_model"]:
-                    break
-
-    # --- RUN_SET ---
-    run_set = pkg.find("RUN_SET")
-    if run_set is not None:
-        run = run_set.find("RUN")
-        if run is not None:
-            row["accession"] = run.get("accession", "")
-            row["run_alias"] = run.get("alias", "")
-            row["spots"] = run.get("total_spots", "")
-            row["bases"] = run.get("total_bases", "")
-            row["avg_length"] = run.get("avg_length", "")
-
-            # Experiment ref
-            exp_ref = run.find("EXPERIMENT_REF")
-            if exp_ref is not None:
-                if not row.get("experiment_accession"):
-                    row["experiment_accession"] = exp_ref.get("accession", "")
-
-    # --- SAMPLE ---
-    sample = pkg.find("SAMPLE")
-    if sample is not None:
-        row["sample_accession"] = sample.get("accession", "")
-        row["sample_alias"] = sample.get("alias", "")
-        row["tax_id"] = _text(sample, "SAMPLE_NAME/TAXON_ID")
-        row["scientific_name"] = _text(sample, "SAMPLE_NAME/SCIENTIFIC_NAME")
-
-        # Sample attributes -> semicolon-separated key=value pairs
-        attrs = []
-        sa_block = sample.find("SAMPLE_ATTRIBUTES")
-        if sa_block is not None:
-            for sa in sa_block.findall("SAMPLE_ATTRIBUTE"):
-                k = _text(sa, "TAG")
-                v = _text(sa, "VALUE")
-                if k:
-                    attrs.append(f"{k}={v}")
-        row["sample_attributes"] = ";".join(attrs)
-
-    # --- STUDY ---
-    study = pkg.find("STUDY")
-    if study is not None:
-        ext_ids = study.find("IDENTIFIERS")
-        if ext_ids is not None:
-            for eid in ext_ids.findall("EXTERNAL_ID"):
-                ns = eid.get("namespace", "")
-                if ns.upper() == "BIOPROJECT":
-                    row["bioproject"] = (eid.text or "").strip()
-        if not row.get("bioproject"):
-            row["bioproject"] = ""
-
-        # Also try viaDescriptor
-        for rid in study.iter("PRIMARY_ID"):
-            if rid.text and rid.text.startswith("PRJ"):
-                row["study_accession"] = rid.text.strip()
-                break
-        for rid in study.iter("EXTERNAL_ID"):
-            if rid.text and rid.text.startswith("SRP"):
-                row["study_accession"] = rid.text.strip()
-                break
-        if not row.get("study_accession"):
-            row["study_accession"] = study.get("accession", "")
-
-    # --- Pool / BioSample ---
-    if not row.get("biosample"):
-        pool = pkg.find("Pool")
-        if pool is not None:
-            for member in pool.findall("Member"):
-                bs = member.get("biosample_accession", "")
-                if bs:
-                    row["biosample"] = bs
-                    break
-
-    return row
-
-
-def parse_sra_xml(xml_text: str) -> List[Dict[str, str]]:
-    """Parse a full EFetch XML response into a list of record dicts.
-
-    Parameters
-    ----------
-    xml_text : str
-        Raw XML from NCBI EFetch.
-
-    Returns
-    -------
-    list[dict[str, str]]
-    """
-    root = ET.fromstring(xml_text)
-    results: List[Dict[str, str]] = []
-    for pkg in root.iter("EXPERIMENT_PACKAGE"):
-        try:
-            record = parse_experiment_package(pkg)
-            results.append(record)
-        except Exception as exc:
-            logger.warning("Failed to parse an EXPERIMENT_PACKAGE: %s", exc)
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Batch processing
-# ---------------------------------------------------------------------------
-def fetch_metadata_batched(
-    accessions: List[str],
-    email: str,
-    api_key: Optional[str],
-    batch_size: int,
-    timeout: int,
-    rate_limit: float,
 ) -> List[Dict[str, str]]:
-    """Fetch metadata for accessions in batches.
+    """Fetch RunInfo CSV metadata from NCBI for given SRR IDs.
 
-    Parameters
-    ----------
-    accessions : list[str]
-        SRR/ERR/DRR accession identifiers.
-    email : str
-        Email for NCBI.
-    api_key : str or None
-        Optional NCBI API key.
-    batch_size : int
-        Number of accessions per EFetch request.
-    timeout : int
-        HTTP timeout per request.
-    rate_limit : float
-        Minimum seconds between requests.
+    Args:
+        srr_ids: List of SRR/ERR/DRR accession strings.
+        batch_size: Number of IDs per request.
+        timeout: HTTP timeout per request.
+        api_key: Optional NCBI API key for higher rate limits.
 
-    Returns
-    -------
-    list[dict[str, str]]
+    Returns:
+        List of dicts representing each run's RunInfo fields.
     """
-    all_records: List[Dict[str, str]] = []
-    total = len(accessions)
-    failed_batches: List[List[str]] = []
-
-    for i in range(0, total, batch_size):
-        batch = accessions[i : i + batch_size]
-        batch_num = i // batch_size + 1
-        total_batches = (total + batch_size - 1) // batch_size
+    all_rows: List[Dict[str, str]] = []
+    for start in range(0, len(srr_ids), batch_size):
+        batch = srr_ids[start : start + batch_size]
+        id_str = ",".join(batch)
+        params = {
+            "db": "sra",
+            "id": id_str,
+            "rettype": "runinfo",
+            "retmode": "text",
+        }
+        if api_key:
+            params["api_key"] = api_key
+        url = f"{NCBI_EUTILS_BASE}/efetch.fcgi?{urlencode(params)}"
         logger.info(
-            "Fetching batch %d/%d (%d accessions)",
-            batch_num,
-            total_batches,
-            len(batch),
+            "Fetching RunInfo batch %d-%d of %d",
+            start + 1,
+            min(start + batch_size, len(srr_ids)),
+            len(srr_ids),
         )
-
-        try:
-            xml_text = efetch_sra_xml(batch, email, api_key, timeout)
-            records = parse_sra_xml(xml_text)
-            logger.info("  Parsed %d record(s)", len(records))
-            all_records.extend(records)
-        except RuntimeError as exc:
-            logger.error("  Batch %d failed: %s", batch_num, exc)
-            failed_batches.append(batch)
-
-        # Rate limiting
-        if i + batch_size < total:
-            time.sleep(rate_limit)
-
-    if failed_batches:
-        logger.warning("%d batch(es) failed.", len(failed_batches))
-        # Retry failed batches once
-        logger.info("Retrying failed batches ...")
-        for batch in failed_batches:
-            try:
-                xml_text = efetch_sra_xml(batch, email, api_key, timeout)
-                records = parse_sra_xml(xml_text)
-                logger.info("  Retry parsed %d record(s)", len(records))
-                all_records.extend(records)
-            except RuntimeError as exc:
-                logger.error("  Retry failed: %s", exc)
-
-    return all_records
+        csv_text = _fetch_with_retry(url, timeout=timeout)
+        reader = csv.DictReader(csv_text.splitlines())
+        for row in reader:
+            all_rows.append(dict(row))
+        if start + batch_size < len(srr_ids):
+            time.sleep(0.4 if api_key else 0.6)
+    logger.info("RunInfo: retrieved %d rows", len(all_rows))
+    return all_rows
 
 
 # ---------------------------------------------------------------------------
-# Output writing
+# Step 2: BioSample
 # ---------------------------------------------------------------------------
-def write_output(
-    records: List[Dict[str, str]],
-    output_path: str,
-    fields: List[str],
-) -> None:
-    """Write metadata records to a TSV file.
 
-    Parameters
-    ----------
-    records : list[dict]
-        Parsed metadata records.
-    output_path : str
-        Path to the output file.
-    fields : list[str]
-        Column names to write.
+def _extract_biosample_accessions(runinfo_rows: List[Dict[str, str]]) -> List[str]:
+    """Extract unique BioSample accessions from RunInfo rows.
+
+    Args:
+        runinfo_rows: Rows from the RunInfo CSV.
+
+    Returns:
+        Deduplicated list of BioSample accessions (SAMN/SAME/ERS/...).
     """
-    outdir = os.path.dirname(os.path.abspath(output_path))
-    if outdir:
-        os.makedirs(outdir, exist_ok=True)
+    sample_set = set()
+    for row in runinfo_rows:
+        for key in ("BioSample", "SampleAccession", "bio_sample", "biosample"):
+            val = row.get(key, "").strip()
+            if val:
+                sample_set.add(val)
+                break
+    return sorted(sample_set)
 
-    # Determine delimiter from file extension
-    delim = "\t"
-    if output_path.endswith(".csv"):
-        delim = ","
 
-    with open(output_path, "w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(
-            fh, fieldnames=fields, delimiter=delim, extrasaction="ignore"
+def fetch_biosample_xml(
+    biosample_ids: List[str],
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    timeout: int = DEFAULT_TIMEOUT,
+    api_key: Optional[str] = None,
+) -> Dict[str, Dict[str, str]]:
+    """Fetch BioSample XML and extract sample attributes.
+
+    Args:
+        biosample_ids: List of BioSample accessions.
+        batch_size: Number of IDs per request.
+        timeout: HTTP timeout per request.
+        api_key: Optional NCBI API key.
+
+    Returns:
+        Dict mapping BioSample accession -> attribute dict.
+    """
+    biosample_data: Dict[str, Dict[str, str]] = {}
+    for start in range(0, len(biosample_ids), batch_size):
+        batch = biosample_ids[start : start + batch_size]
+        id_str = ",".join(batch)
+        params = {
+            "db": "biosample",
+            "id": id_str,
+            "rettype": "full",
+            "retmode": "xml",
+        }
+        if api_key:
+            params["api_key"] = api_key
+        url = f"{NCBI_EUTILS_BASE}/efetch.fcgi?{urlencode(params)}"
+        logger.info(
+            "Fetching BioSample XML batch %d-%d of %d",
+            start + 1,
+            min(start + batch_size, len(biosample_ids)),
+            len(biosample_ids),
         )
-        writer.writeheader()
-        for rec in records:
-            # Ensure all fields are present
-            for f in fields:
-                rec.setdefault(f, "")
-            writer.writerow(rec)
+        xml_text = _fetch_with_retry(url, timeout=timeout)
+        root = ET.fromstring(xml_text)
+        for bs_elem in root.iter("BioSample"):
+            acc = bs_elem.attrib.get("accession", bs_elem.attrib.get("id", ""))
+            attrs: Dict[str, str] = {}
+            for attr_elem in bs_elem.iter("Attribute"):
+                attr_name = attr_elem.attrib.get(
+                    "harmonized_name",
+                    attr_elem.attrib.get("attribute_name", attr_elem.tag),
+                )
+                attrs[attr_name] = (attr_elem.text or "").strip()
+            description = bs_elem.findtext("Description/Title", default="").strip()
+            if description:
+                attrs["description_title"] = description
+            organism = bs_elem.findtext(
+                "Description/Organism/OrganismName", default=""
+            ).strip()
+            if organism:
+                attrs["organism"] = organism
+            if acc:
+                biosample_data[acc] = attrs
+        if start + batch_size < len(biosample_ids):
+            time.sleep(0.4 if api_key else 0.6)
+    logger.info("BioSample: retrieved %d samples", len(biosample_data))
+    return biosample_data
 
-    logger.info("Wrote %d records to %s", len(records), output_path)
+
+# ---------------------------------------------------------------------------
+# Step 3: Experiment (SRA experiment XML)
+# ---------------------------------------------------------------------------
+
+def fetch_experiment_xml(
+    srr_ids: List[str],
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    timeout: int = DEFAULT_TIMEOUT,
+    api_key: Optional[str] = None,
+) -> Dict[str, Dict[str, str]]:
+    """Fetch SRA experiment XML and extract experiment-level attributes.
+
+    Args:
+        srr_ids: List of SRR accessions.
+        batch_size: Number of IDs per request.
+        timeout: HTTP timeout per request.
+        api_key: Optional NCBI API key.
+
+    Returns:
+        Dict mapping run accession -> experiment attribute dict.
+    """
+    experiment_data: Dict[str, Dict[str, str]] = {}
+    for start in range(0, len(srr_ids), batch_size):
+        batch = srr_ids[start : start + batch_size]
+        id_str = ",".join(batch)
+        params = {
+            "db": "sra",
+            "id": id_str,
+            "rettype": "full",
+            "retmode": "xml",
+        }
+        if api_key:
+            params["api_key"] = api_key
+        url = f"{NCBI_EUTILS_BASE}/efetch.fcgi?{urlencode(params)}"
+        logger.info(
+            "Fetching Experiment XML batch %d-%d of %d",
+            start + 1,
+            min(start + batch_size, len(srr_ids)),
+            len(srr_ids),
+        )
+        xml_text = _fetch_with_retry(url, timeout=timeout)
+        root = ET.fromstring(xml_text)
+        for pkg in root.iter("EXPERIMENT_PACKAGE"):
+            run_elem = pkg.find(".//RUN")
+            if run_elem is None:
+                continue
+            run_acc = run_elem.attrib.get("accession", "")
+            exp_info: Dict[str, str] = {}
+            exp_elem = pkg.find(".//EXPERIMENT")
+            if exp_elem is not None:
+                exp_info["experiment_accession"] = exp_elem.attrib.get("accession", "")
+                title_elem = exp_elem.find("TITLE")
+                if title_elem is not None and title_elem.text:
+                    exp_info["experiment_title"] = title_elem.text.strip()
+            lib_elem = pkg.find(".//LIBRARY_DESCRIPTOR")
+            if lib_elem is not None:
+                for child in lib_elem:
+                    tag = child.tag.replace("LIBRARY_", "")
+                    if child.text:
+                        exp_info[f"library_{tag.lower()}"] = child.text.strip()
+            plat_elem = pkg.find(".//INSTRUMENT_MODEL")
+            if plat_elem is not None and plat_elem.text:
+                exp_info["instrument_model"] = plat_elem.text.strip()
+            if run_acc:
+                experiment_data[run_acc] = exp_info
+        if start + batch_size < len(srr_ids):
+            time.sleep(0.4 if api_key else 0.6)
+    logger.info("Experiment: retrieved %d runs", len(experiment_data))
+    return experiment_data
+
+
+# ---------------------------------------------------------------------------
+# Merge and write
+# ---------------------------------------------------------------------------
+
+def merge_metadata(
+    runinfo_rows: List[Dict[str, str]],
+    biosample_data: Dict[str, Dict[str, str]],
+    experiment_data: Dict[str, Dict[str, str]],
+) -> List[Dict[str, str]]:
+    """Merge RunInfo, BioSample, and Experiment data into unified rows.
+
+    Args:
+        runinfo_rows: Rows from RunInfo CSV.
+        biosample_data: BioSample accession -> attributes dict.
+        experiment_data: Run accession -> experiment attributes dict.
+
+    Returns:
+        Merged list of flat dicts, one per run.
+    """
+    merged: List[Dict[str, str]] = []
+    for row in runinfo_rows:
+        combined = dict(row)
+        run_acc = row.get("Run", row.get("run_accession", ""))
+        bio_acc = row.get("BioSample", row.get("SampleAccession", ""))
+        if bio_acc and bio_acc in biosample_data:
+            for k, v in biosample_data[bio_acc].items():
+                combined[f"biosample_{k}"] = v
+        if run_acc and run_acc in experiment_data:
+            for k, v in experiment_data[run_acc].items():
+                combined[f"experiment_{k}"] = v
+        merged.append(combined)
+    return merged
+
+
+def collect_fieldnames(rows: List[Dict[str, str]]) -> List[str]:
+    """Collect all unique keys across rows, preserving first-seen order.
+
+    Args:
+        rows: List of dicts.
+
+    Returns:
+        Ordered list of all keys.
+    """
+    seen: Dict[str, None] = {}
+    for row in rows:
+        for key in row:
+            if key not in seen:
+                seen[key] = None
+    return list(seen.keys())
+
+
+def write_tsv(rows: List[Dict[str, str]], path: str) -> None:
+    """Write merged rows to a TSV file.
+
+    Args:
+        rows: Merged data rows.
+        path: Output file path.
+    """
+    fields = collect_fieldnames(rows)
+    out_path = Path(path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fields, delimiter="\t", extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    logger.info("Wrote %d rows x %d columns to %s", len(rows), len(fields), path)
 
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-def build_parser() -> argparse.ArgumentParser:
-    """Construct the argument parser."""
+
+def main() -> None:
+    """Main entry point."""
     parser = argparse.ArgumentParser(
-        prog="fetch_sra_metadata_ncbi.py",
         description=(
-            "Fetch SRA metadata from NCBI by querying SRR accession IDs via "
-            "Entrez E-Utilities. Parses EXPERIMENT_PACKAGE XML and outputs "
-            "a tab-delimited (or CSV) table of sample attributes."
-        ),
-        epilog=(
-            "Examples:\n"
-            "  # Basic usage with an accession list\n"
-            "  %(prog)s -i srr_list.txt -o metadata.tsv -e your@email.com\n"
-            "\n"
-            "  # Batch size 100, 3 requests/sec with API key\n"
-            "  %(prog)s -i srr_list.txt -o metadata.tsv -e your@email.com \\\n"
-            "       -b 100 --api-key YOUR_NCBI_API_KEY\n"
-            "\n"
-            "  # Custom field list\n"
-            "  %(prog)s -i srr_list.txt -o metadata.tsv -e your@email.com \\\n"
-            "       --fields accession,sample_accession,scientific_name,sample_attributes\n"
-            "\n"
-            "  # Single accession from command line\n"
-            "  %(prog)s -i SRR1234567 -o metadata.tsv -e your@email.com\n"
+            "Fetch comprehensive SRA metadata via NCBI E-utilities "
+            "(RunInfo -> BioSample -> Experiment)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+examples:
+  %(prog)s --srr-ids SRR123456 SRR789012 --output-dir ./meta --email you@example.com
+  %(prog)s --input-file ids.txt --output-dir ./results --email you@example.com --api-key ABC123
+  %(prog)s --input-file ids.txt -o out --email you@example.com --batch-size 20 --log-level DEBUG
+""",
+    )
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument(
+        "--input-file", help="Path to file with one SRR ID per line."
+    )
+    input_group.add_argument(
+        "--srr-ids", nargs="+", help="One or more SRR accessions on the command line."
     )
     parser.add_argument(
-        "-i", "--input", required=True,
-        help=(
-            "Input file with one SRR/ERR/DRR accession per line, "
-            "or a single accession / comma-separated list."
-        ),
+        "--output-dir",
+        "-o",
+        default=".",
+        help="Directory for output TSV files (default: current directory).",
     )
     parser.add_argument(
-        "-o", "--output", default="sra_metadata.tsv",
-        help="Output file path (TSV or CSV based on extension, default: sra_metadata.tsv)",
+        "--email", required=True, help="Email address for NCBI E-utilities."
     )
     parser.add_argument(
-        "-e", "--email", required=True,
-        help="Email address for NCBI Entrez (required by NCBI policy)",
+        "--api-key",
+        default=os.environ.get("NCBI_API_KEY", ""),
+        help="NCBI API key (or set NCBI_API_KEY env var).",
     )
     parser.add_argument(
-        "-b", "--batch-size", type=int, default=DEFAULT_BATCH_SIZE,
-        help=f"Number of accessions per EFetch request (default: {DEFAULT_BATCH_SIZE})",
+        "--batch-size",
+        type=int,
+        default=DEFAULT_BATCH_SIZE,
+        help=f"Number of IDs per API request (default: {DEFAULT_BATCH_SIZE}).",
     )
     parser.add_argument(
-        "-t", "--threads", type=int, default=DEFAULT_THREADS,
-        help=f"Number of threads (default: {DEFAULT_THREADS})",
+        "--timeout",
+        type=int,
+        default=DEFAULT_TIMEOUT,
+        help=f"HTTP timeout per request in seconds (default: {DEFAULT_TIMEOUT}).",
     )
     parser.add_argument(
-        "--api-key", default=None,
-        help="NCBI API key for higher rate limits",
+        "--retries",
+        type=int,
+        default=DEFAULT_MAX_RETRIES,
+        help=f"Retry attempts per request (default: {DEFAULT_MAX_RETRIES}).",
     )
     parser.add_argument(
-        "--rate-limit", type=float, default=DEFAULT_RATE_LIMIT,
-        help=f"Seconds to wait between API calls (default: {DEFAULT_RATE_LIMIT})",
-    )
-    parser.add_argument(
-        "--timeout", type=int, default=120,
-        help="HTTP request timeout in seconds (default: 120)",
-    )
-    parser.add_argument(
-        "--fields", default=None,
-        help=(
-            "Comma-separated list of output fields. Default: all standard fields "
-            "plus sample_attributes."
-        ),
-    )
-    parser.add_argument(
-        "--log-level", default="INFO",
+        "--log-level",
+        default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help="Set logging verbosity (default: INFO)",
+        help="Set the logging level (default: INFO).",
     )
     parser.add_argument(
-        "--version", action="version",
-        version=f"%(prog)s {__version__}",
+        "--version", action="version", version=f"%(prog)s {__version__}"
     )
-    return parser
-
-
-def setup_logging(level: str) -> None:
-    """Configure the root logger.
-
-    Parameters
-    ----------
-    level : str
-        Logging level string.
-    """
-    logging.basicConfig(
-        level=getattr(logging, level),
-        format="%(asctime)s [%(levelname)-8s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-
-def read_accessions(input_arg: str) -> List[str]:
-    """Read accession IDs from a file or treat input as a bare accession.
-
-    Parameters
-    ----------
-    input_arg : str
-        File path or accession identifier(s).
-
-    Returns
-    -------
-    list[str]
-    """
-    path = Path(input_arg)
-    if path.is_file():
-        accs = [
-            line.strip()
-            for line in path.read_text().splitlines()
-            if line.strip() and not line.strip().startswith("#")
-        ]
-        logger.info("Read %d accession(s) from %s", len(accs), input_arg)
-        return accs
-    # Single accession or comma-separated
-    accs = [a.strip() for a in input_arg.split(",") if a.strip()]
-    return accs
-
-
-def parse_field_list(fields_str: Optional[str]) -> List[str]:
-    """Parse a comma-separated field list, falling back to defaults.
-
-    Parameters
-    ----------
-    fields_str : str or None
-        Comma-separated field names, or None for defaults.
-
-    Returns
-    -------
-    list[str]
-    """
-    if fields_str is None:
-        return list(DEFAULT_OUTPUT_FIELDS)
-    return [f.strip() for f in fields_str.split(",") if f.strip()]
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-def main() -> None:
-    """Entry point for the NCBI SRA metadata fetcher."""
-    parser = build_parser()
     args = parser.parse_args()
-    setup_logging(args.log_level)
 
-    logger.info("=== fetch_sra_metadata_ncbi.py %s ===", __version__)
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
 
-    # Read accessions
-    accessions = read_accessions(args.input)
-    if not accessions:
-        logger.error("No accessions to process.")
+    if args.input_file:
+        srr_ids = _read_ids(args.input_file)
+    else:
+        srr_ids = list(args.srr_ids)
+
+    if not srr_ids:
+        logger.error("No SRR IDs provided.")
         sys.exit(1)
 
-    logger.info("Total accessions: %d", len(accessions))
-    logger.info("Batch size: %d", args.batch_size)
-    logger.info("Rate limit: %.2f s", args.rate_limit)
+    logger.info("Starting comprehensive metadata fetch for %d accession(s).", len(srr_ids))
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Resolve output fields
-    fields = parse_field_list(args.fields)
-    logger.info("Output fields (%d): %s", len(fields), ", ".join(fields))
+    # Step 1: RunInfo
+    logger.info("Step 1/3: Fetching RunInfo ...")
+    runinfo_rows = fetch_runinfo(
+        srr_ids,
+        batch_size=args.batch_size,
+        timeout=args.timeout,
+        api_key=args.api_key or None,
+    )
+    if not runinfo_rows:
+        logger.error("No RunInfo data retrieved. Exiting.")
+        sys.exit(1)
 
-    # Fetch metadata
-    try:
-        records = fetch_metadata_batched(
-            accessions=accessions,
-            email=args.email,
-            api_key=args.api_key,
+    # Step 2: BioSample
+    logger.info("Step 2/3: Fetching BioSample XML ...")
+    biosample_ids = _extract_biosample_accessions(runinfo_rows)
+    biosample_data: Dict[str, Dict[str, str]] = {}
+    if biosample_ids:
+        biosample_data = fetch_biosample_xml(
+            biosample_ids,
             batch_size=args.batch_size,
             timeout=args.timeout,
-            rate_limit=args.rate_limit,
+            api_key=args.api_key or None,
         )
-    except Exception as exc:
-        logger.error("Metadata fetching failed: %s", exc)
-        sys.exit(1)
+    else:
+        logger.warning("No BioSample accessions found in RunInfo.")
 
-    if not records:
-        logger.warning("No metadata records retrieved.")
-        sys.exit(0)
+    # Step 3: Experiment
+    logger.info("Step 3/3: Fetching Experiment XML ...")
+    experiment_data = fetch_experiment_xml(
+        srr_ids,
+        batch_size=args.batch_size,
+        timeout=args.timeout,
+        api_key=args.api_key or None,
+    )
 
-    # Write output
-    write_output(records, args.output, fields)
-
-    # Summary
-    found_accessions: Set[str] = {r.get("accession", "") for r in records}
-    missing = set(accessions) - found_accessions
-    logger.info("=" * 50)
-    logger.info("Records retrieved : %d", len(records))
-    logger.info("Output file       : %s", args.output)
-    if missing:
-        logger.warning(
-            "Accessions not found in results (%d): %s",
-            len(missing),
-            ", ".join(sorted(missing)[:10]),
-        )
-        miss_file = os.path.splitext(args.output)[0] + ".missing.txt"
-        with open(miss_file, "w") as fh:
-            for m in sorted(missing):
-                fh.write(m + "\n")
-        logger.warning("Missing accessions written to %s", miss_file)
-    logger.info("Done.")
+    # Merge
+    merged = merge_metadata(runinfo_rows, biosample_data, experiment_data)
+    output_path = str(out_dir / "sra_metadata_comprehensive.tsv")
+    write_tsv(merged, output_path)
+    logger.info("Done. Output: %s", output_path)
 
 
 if __name__ == "__main__":
