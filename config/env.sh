@@ -54,5 +54,10 @@ if [ -f "$_local" ]; then
 fi
 unset -v _local
 
+# R package library: expose MYS_R_LIBS to R itself (prepend, keep any existing).
+if [ -n "${MYS_R_LIBS:-}" ]; then
+    export R_LIBS="${MYS_R_LIBS}${R_LIBS:+:${R_LIBS}}"
+fi
+
 # --- Export everything scripts should see -------------------------------------
 export MYS_HOME MYS_CONFIG_LOADED MYS_THREADS NCBI_EMAIL NCBI_API_KEY
