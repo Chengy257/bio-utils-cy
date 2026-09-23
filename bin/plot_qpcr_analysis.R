@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 #########################################################################
-# File Name: /mnt/d/myscripts/myscripts/visualization/plot_qpcr_analysis.R
+# File Name: bin/plot_qpcr_analysis.R
 # Author: ChengYu
 # Description: qPCR delta-delta CT analysis and visualization
 # Created Time: 2026

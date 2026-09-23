@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 #########################################################################
-# File Name: /mnt/d/myscripts/myscripts/ml_stats/batch_parse_sanger.R
+# File Name: bin/batch_parse_sanger.R
 # Author: ChengYu
 # Description: Batch parse Sanger sequencing .ab1 trace files using
 #              sangerseqR. For each file: read trace, call bases, phase

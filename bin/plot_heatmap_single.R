@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 #########################################################################
-# File Name: /mnt/d/myscripts/myscripts/visualization/plot_heatmap_single.R
+# File Name: bin/plot_heatmap_single.R
 # Author: ChengYu
 # Description: Generate a publication-quality heatmap from a single
 #              expression matrix (genes x samples) using ComplexHeatmap.

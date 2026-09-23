@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #########################################################################
-# File Name: /mnt/d/myscripts/myscripts/visualization/plot_go_heatmap_batch.sh
+# File Name: bin/plot_go_heatmap_batch.sh
 # Author: ChengYu
 # Description: Batch generate heatmaps for GO term gene sets from
 #              expression data. For each GO ID in the input list, genes
@@ -17,7 +17,7 @@ set -euo pipefail
 # Default values
 # ---------------------------------------------------------------------------
 GMT=""
-R_SCRIPT="plot_heatmap_multi.R"
+R_SCRIPT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/plot_heatmap_multi.R"
 OUT_PREFIX="GO_Heatmap"
 
 # ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ Required options:
 
 Optional options:
   -r R_SCRIPT        Path to the R heatmap plotting script
-                     (default: plot_heatmap_multi.R)
+                     (default: plot_heatmap_multi.R alongside this script)
   -o OUT_PREFIX      Prefix for output files (default: GO_Heatmap)
   -h                 Show this help message and exit
 

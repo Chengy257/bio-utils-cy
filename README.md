@@ -12,6 +12,21 @@ This repository contains standalone utility scripts covering RNA-seq, ChIP-seq, 
 
 ---
 
+## Script Conventions
+
+Rules for new or modified scripts — keep the toolbox uniform:
+
+- **Location & permissions**: every executable lives flat in `bin/` with the executable bit set. Non-CLI shared code (if it ever appears) goes in `lib/`.
+- **Naming**: lowercase `snake_case`, verb-first (`plot_*`, `fetch_*`, `batch_*`, `calculate_*`); language is visible from the extension `.py` / `.R` / `.sh`.
+- **CLI**: Python → argparse; R → getopt; Bash → getopts. Every script must answer `-h` with a usage message and exit cleanly.
+- **Configuration**: bash scripts source `config/env.sh` (one line, see [Configuration](#configuration)). External tools are resolved through `mys_resolve_bin` with the fixed order: CLI option > `MYS_*_BIN` path variable > `PATH`. Never hardcode absolute tool paths in code.
+- **Logging**: Python `logging` to stderr; Bash `[INFO]/[WARN]/[ERROR]` prefixes to stderr; R `message()`.
+- **Exit codes**: `0` on success, non-zero on failure. Bash: `set -euo pipefail`. Python: `sys.exit(1)` on handled errors. R: `quit(status=1)`.
+- **Headers**: description + changelog comment block; no machine-specific absolute paths in code or comments.
+- **Regression**: run `tools/smoke_test.sh` after any change — every script must still pass its `-h`.
+
+---
+
 ## Directory Structure
 
 ```

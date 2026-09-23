@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 #########################################################################
-# File Name: /mnt/d/myscripts/myscripts/visualization/plot_flower.R
+# File Name: bin/plot_flower.R
 # Author: ChengYu
 # Description: Flower/petal plot for visualizing set intersection sizes
 #              (e.g., Venn-like display for multi-sample gene overlaps).

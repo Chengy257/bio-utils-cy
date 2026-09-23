@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 #########################################################################
-# File Name: /mnt/d/myscripts/myscripts/ml_stats/mfuzz_soft_cluster.R
+# File Name: bin/mfuzz_soft_cluster.R
 # Author: ChengYu
 # Description: Soft clustering of time-series expression data using Mfuzz.
 #              Reads a gene x sample expression matrix (TSV), performs

@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 #########################################################################
-# File Name: /mnt/d/myscripts/myscripts/visualization/plot_gene_structure.R
+# File Name: bin/plot_gene_structure.R
 # Author: ChengYu
 # Description: Gene structure visualization from GTF files. Plots exons,
 #              CDS regions, and introns (with strand-direction arrows)

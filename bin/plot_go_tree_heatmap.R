@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 #########################################################################
-# File Name: /mnt/d/myscripts/myscripts/visualization/plot_go_tree_heatmap.R
+# File Name: bin/plot_go_tree_heatmap.R
 # Author: ChengYu
 # Description: Combine a GO semantic similarity tree (NJ) with an
 #              enrichment barplot (NES coloured by p-value) and GO

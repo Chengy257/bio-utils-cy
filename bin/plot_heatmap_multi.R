@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 #########################################################################
-# File Name: /mnt/d/myscripts/myscripts/visualization/plot_heatmap_multi.R
+# File Name: bin/plot_heatmap_multi.R
 # Author: ChengYu
 # Description: Generate multi-cluster ComplexHeatmap panels stacked
 #              vertically. Each input expression matrix becomes one

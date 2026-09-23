@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 #########################################################################
-# File Name: /mnt/d/myscripts/myscripts/visualization/plot_upset.R
+# File Name: bin/plot_upset.R
 # Author: ChengYu
 # Description: Generate UpSet intersection plots for multi-set
 #              comparison. Reads a file listing gene-list paths (one

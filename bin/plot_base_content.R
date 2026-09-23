@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 #########################################################################
-# File Name: /mnt/d/myscripts/myscripts/visualization/plot_base_content.R
+# File Name: bin/plot_base_content.R
 # Author: ChengYu
 # Description: Sliding window base composition analysis and plotting
 #              for FASTA sequences.

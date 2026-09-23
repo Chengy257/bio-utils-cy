@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 #########################################################################
-# File Name: /mnt/d/myscripts/myscripts/visualization/plot_gwas_manhattan.R
+# File Name: bin/plot_gwas_manhattan.R
 # Author: ChengYu
 # Description: GWAS Manhattan plot, QQ plot, and regional Manhattan plot
 #              with gene structure overlay from EMMAX association results.

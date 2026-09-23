@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #########################################################################
-# File Name: /mnt/d/myscripts/myscripts/ml_stats/batch_sanger_blast.sh
+# File Name: bin/batch_sanger_blast.sh
 # Author: ChengYu
 # Description: Batch extract Sanger sequencing results from .zip files,
 #              assemble sequences into FASTA, create BLAST database, and
