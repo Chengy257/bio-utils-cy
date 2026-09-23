@@ -49,6 +49,7 @@ REGISTRY=(
     "MYS_VCFTOOLS_BIN|vcftools"
     "MYS_FEATURECOUNTS_BIN|featureCounts"
     "MYS_SAMTOOLS_BIN|samtools"
+    "MYS_INFER_EXP_BIN|infer_experiment.py"
     "MYS_BEDTOOLS_BIN|bedtools"
     "MYS_BAMCOVERAGE_BIN|bamCoverage"
     "MYS_GTF2BED_BIN|gtf2bed"

@@ -93,9 +93,11 @@ done
 
 [[ -z "${INPUT}" ]] && log_error "Missing required option: -i/--input"
 
-# Find tools
-BAMCOV=$(command -v ${BAMCOV:-bamCoverage} 2>/dev/null) || log_error "bamCoverage not found. Install deepTools."
-SAMTOOLS=$(command -v ${SAMTOOLS:-samtools} 2>/dev/null) || log_error "samtools not found."
+# Find tools (CLI --bamcoverage > MYS_BAMCOVERAGE_BIN > PATH)
+if [[ -z "${BAMCOV}" ]]; then
+    BAMCOV="$(mys_resolve_bin MYS_BAMCOVERAGE_BIN bamCoverage)" || log_error "bamCoverage not found. Install deepTools or set MYS_BAMCOVERAGE_BIN in config/env.local.sh."
+fi
+SAMTOOLS="$(mys_resolve_bin MYS_SAMTOOLS_BIN samtools)" || log_error "samtools not found. Install samtools or set MYS_SAMTOOLS_BIN in config/env.local.sh."
 
 # Validate normalization
 VALID_NORMS="RPKM CPM BPM RPGC None"

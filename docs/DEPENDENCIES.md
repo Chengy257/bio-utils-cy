@@ -62,7 +62,7 @@ Legend: **Tools** = external executables · **Py** = Python packages (import nam
 |--------|-------|----|---|
 | `deseq2_multigroup.R` | — | — | DESeq2, ggplot2, BiocParallel, gplots, RColorBrewer, amap, getopt |
 | `deg_wilcox_test.R` | — | — | edgeR, getopt |
-| `featurecounts_pipeline.sh` | featureCounts, samtools | — | — |
+| `featurecounts_pipeline.sh` | featureCounts, samtools, infer_experiment.py (RSeQC) | — | — |
 | `merge_featurecounts.py` | — (parses output) | pandas | — |
 | `calculate_fpkm_tpm.R` | — | — | GenomicFeatures, getopt |
 | `calculate_effective_length.R` | — | — | GenomicFeatures, getopt |
@@ -135,7 +135,7 @@ Legend: **Tools** = external executables · **Py** = Python packages (import nam
 
 ## Summary: machine-level requirements
 
-- **External tools** (18): prefetch, fasterq-dump, fastq-dump, fastqc, parallel, ascp, blastn, blastp, makeblastdb, mkdssp, pymol, ChimeraX, plink, vcftools, featureCounts, samtools, bedtools, bamCoverage, gtf2bed, gff2bed — pin each in `config/env.local.sh`.
+- **External tools** (21): prefetch, fasterq-dump, fastq-dump, fastqc, parallel, ascp, blastn, blastp, makeblastdb, mkdssp, pymol, ChimeraX, plink, vcftools, featureCounts, samtools, infer_experiment.py, bedtools, bamCoverage, gtf2bed, gff2bed — pin each in `config/env.local.sh`.
 - **Python** (9): biopython, pandas, numpy, matplotlib, networkx, scipy, tqdm, lxml, pyteomics.
 - **R** (33): see tables above — the Rscript interpreter and library path come from `MYS_RSCRIPT_BIN` / `MYS_R_LIBS`.
 - **Credentials**: `NCBI_EMAIL`, `NCBI_API_KEY` for NCBI E-utilities scripts.

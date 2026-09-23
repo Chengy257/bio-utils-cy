@@ -84,9 +84,11 @@ done
 [[ ! -f "${GTF}" ]]     && log_error "GTF file not found: ${GTF}"
 [[ ! -f "${BED}" ]]     && log_error "BED file not found: ${BED}"
 
-# Find tools
-SAMTOOLS=$(command -v ${SAMTOOLS:-samtools} 2>/dev/null) || log_error "samtools not found."
-INFER_EXP=$(command -v ${INFER_EXP:-infer_experiment.py} 2>/dev/null) || log_error "infer_experiment.py not found."
+# Find tools (MYS_*_BIN from config/env.sh > PATH)
+SAMTOOLS="$(mys_resolve_bin MYS_SAMTOOLS_BIN samtools)" || log_error "samtools not found. Install samtools or set MYS_SAMTOOLS_BIN."
+INFER_EXP="$(mys_resolve_bin MYS_INFER_EXP_BIN infer_experiment.py)" || log_error "infer_experiment.py not found. Install RSeQC or set MYS_INFER_EXP_BIN."
+FEATURECOUNTS="$(mys_resolve_bin MYS_FEATURECOUNTS_BIN featureCounts)" || log_error "featureCounts not found. Install subread or set MYS_FEATURECOUNTS_BIN."
+RSCRIPT_BIN="$(mys_resolve_bin MYS_RSCRIPT_BIN Rscript)" || log_error "Rscript not found. Set MYS_RSCRIPT_BIN in config/env.local.sh."
 
 # Create output directory
 EXPR_DIR="${OUT_DIR}/expression"
@@ -147,9 +149,9 @@ for BAM in "${BAM_FILES[@]}"; do
     # Run featureCounts
     log_info "  Running featureCounts..."
     if [[ -n "${FC_SCRIPT}" && -f "${FC_SCRIPT}" ]]; then
-        Rscript "${FC_SCRIPT}" "${BAM}" "${GTF}" "${STRAND_CODE}" "${THREADS}" "${EXPR_DIR}/${SAMPLE}"
+        "${RSCRIPT_BIN}" "${FC_SCRIPT}" "${BAM}" "${GTF}" "${STRAND_CODE}" "${THREADS}" "${EXPR_DIR}/${SAMPLE}"
     else
-        featureCounts ${PE_FLAG} -s "${STRAND_CODE}" -t exon -g gene_id \
+        "${FEATURECOUNTS}" ${PE_FLAG} -s "${STRAND_CODE}" -t exon -g gene_id \
             -a "${GTF}" -o "${EXPR_DIR}/${SAMPLE}.fc.tsv" \
             -T "${THREADS}" "${BAM}"
     fi

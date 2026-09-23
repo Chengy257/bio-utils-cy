@@ -18,11 +18,27 @@ Requires: blastp, makeblastdb (NCBI BLAST+), markov-clustering, networkx, matplo
 import argparse
 import logging
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 __version__ = "1.0.0"
+
+
+def resolve_tool(name: str) -> str:
+    """Resolve an external tool: MYS_<NAME>_BIN (config/env.sh) first, then PATH."""
+    env_path = os.environ.get(f"MYS_{name.upper()}_BIN", "")
+    if env_path:
+        if os.path.isfile(env_path) and os.access(env_path, os.X_OK):
+            return env_path
+        raise FileNotFoundError(f"MYS_{name.upper()}_BIN is set but not executable: {env_path}")
+    found = shutil.which(name)
+    if not found:
+        raise FileNotFoundError(
+            f"{name} not found in PATH; set MYS_{name.upper()}_BIN in config/env.local.sh"
+        )
+    return found
 
 
 def _check_dependencies() -> None:
@@ -77,12 +93,14 @@ def run_blast(
     """
     if not os.path.exists(f"{blast_db}.pin"):
         logging.info("Creating BLAST database: %s", blast_db)
-        cmd = f"makeblastdb -in {fasta_file} -dbtype prot -out {blast_db}"
+        makeblastdb = resolve_tool("makeblastdb")
+        cmd = f"{makeblastdb} -in {fasta_file} -dbtype prot -out {blast_db}"
         run(cmd, shell=True, check=True)
 
     logging.info("Running BLASTP (evalue=%g, threads=%d)...", evalue, threads)
+    blastp = resolve_tool("blastp")
     cmd = (
-        f"blastp -query {fasta_file} -db {blast_db} "
+        f"{blastp} -query {fasta_file} -db {blast_db} "
         f"-evalue {evalue} -outfmt 6 -out {output_file} "
         f"-num_threads {threads}"
     )
@@ -312,11 +330,13 @@ def main() -> None:
         logging.error("Input file not found: %s", args.input)
         sys.exit(1)
 
-    # Check BLAST+ availability
+    # Check BLAST+ availability (and resolve configured binaries)
     try:
-        run(["blastp", "-version"], capture_output=True, check=True)
-    except (CalledProcessError, FileNotFoundError):
-        logging.error("BLAST+ not found. Install NCBI BLAST+ and ensure blastp is in PATH.")
+        blastp_bin = resolve_tool("blastp")
+        makeblastdb_bin = resolve_tool("makeblastdb")
+        run([blastp_bin, "-version"], capture_output=True, check=True)
+    except (CalledProcessError, FileNotFoundError) as exc:
+        logging.error("BLAST+ not available: %s", exc)
         sys.exit(1)
 
     # Read sequences

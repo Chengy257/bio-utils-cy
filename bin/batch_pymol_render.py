@@ -162,4 +162,14 @@ def main(argv: Optional[List[str]] = None) -> None:
 
 
 if __name__ == "__main__":
+    # The `pymol` python module ships with the PyMOL installation. When the
+    # current interpreter lacks it, re-exec under the configured PyMOL binary
+    # (MYS_PYMOL_BIN from config/env.sh); arguments after "--" are forwarded.
+    try:
+        import pymol  # noqa: F401
+    except ImportError:
+        _pymol_bin = os.environ.get("MYS_PYMOL_BIN", "")
+        if _pymol_bin and os.path.isfile(_pymol_bin) and os.access(_pymol_bin, os.X_OK):
+            os.execv(_pymol_bin, [_pymol_bin, "-cq", os.path.abspath(__file__), "--", *sys.argv[1:]])
+        # PyMOL not configured: fall through and let tool functions report the gap.
     main()

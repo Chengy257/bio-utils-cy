@@ -90,13 +90,9 @@ if [[ ! -d "${WORK_DIR}" ]]; then
     exit 1
 fi
 
-## ---- Check BLAST+ tools are available ----
-for tool in makeblastdb blastn; do
-    if ! command -v "${tool}" &>/dev/null; then
-        echo "Error: ${tool} not found in PATH. Please install BLAST+." >&2
-        exit 1
-    fi
-done
+## ---- Resolve BLAST+ tools (MYS_*_BIN from config/env.sh > PATH) ----
+MAKEBLASTDB_BIN="$(mys_resolve_bin MYS_MAKEBLASTDB_BIN makeblastdb)" || { echo "Error: makeblastdb not found. Install BLAST+ or set MYS_MAKEBLASTDB_BIN." >&2; exit 1; }
+BLASTN_BIN="$(mys_resolve_bin MYS_BLASTN_BIN blastn)" || { echo "Error: blastn not found. Install BLAST+ or set MYS_BLASTN_BIN." >&2; exit 1; }
 
 ## ---- Cleanup trap ----
 ORIG_DIR="$(pwd)"
@@ -179,14 +175,14 @@ echo "  Assembled ${seq_count} sequence(s) into ${ALLSEQ}."
 
 ## ---- Step 4: Create BLAST database ----
 echo "=== Step 4: Creating BLAST database ==="
-makeblastdb -in "${DATABASE}" -dbtype nucl -parse_seqids \
+"${MAKEBLASTDB_BIN}" -in "${DATABASE}" -dbtype nucl -parse_seqids \
     -out sanger.blastdb -logfile blastdb_log.txt
 echo "  BLAST database created from: ${DATABASE}"
 
 ## ---- Step 5: Run BLASTn (format 1 - pairwise) ----
 echo "=== Step 5: Running BLASTn (pairwise format) ==="
 RESULT_TXT="${OUT_PREFIX}_result.txt"
-blastn -query "${ALLSEQ}" -db sanger.blastdb \
+"${BLASTN_BIN}" -query "${ALLSEQ}" -db sanger.blastdb \
     -out "${RESULT_TXT}" -outfmt 1 \
     -num_threads "${THREADS}"
 echo "  Pairwise results: ${RESULT_TXT}"
@@ -194,7 +190,7 @@ echo "  Pairwise results: ${RESULT_TXT}"
 ## ---- Step 6: Run BLASTn (format 6 - tabular) ----
 echo "=== Step 6: Running BLASTn (tabular format) ==="
 RESULT_TSV="${OUT_PREFIX}_result.tsv"
-blastn -query "${ALLSEQ}" -db sanger.blastdb \
+"${BLASTN_BIN}" -query "${ALLSEQ}" -db sanger.blastdb \
     -out "${RESULT_TSV}" -outfmt 6 \
     -num_threads "${THREADS}"
 echo "  Tabular results: ${RESULT_TSV}"

@@ -18,6 +18,7 @@ Requires: blastn, blastp (NCBI BLAST+)
 import argparse
 import logging
 import os
+import shutil
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -30,6 +31,22 @@ from Bio.Blast import NCBIXML
 from Bio.Seq import Seq
 
 __version__ = "1.0.0"
+
+
+def resolve_tool(name: str) -> str:
+    """Resolve an external tool: MYS_<NAME>_BIN (config/env.sh) first, then PATH."""
+    env_path = os.environ.get(f"MYS_{name.upper()}_BIN", "")
+    if env_path:
+        if os.path.isfile(env_path) and os.access(env_path, os.X_OK):
+            return env_path
+        raise FileNotFoundError(f"MYS_{name.upper()}_BIN is set but not executable: {env_path}")
+    found = shutil.which(name)
+    if not found:
+        raise FileNotFoundError(
+            f"{name} not found in PATH; set MYS_{name.upper()}_BIN in config/env.local.sh"
+        )
+    return found
+
 
 # BLAST parameters optimized for short sequences
 BLASTN_PARAMS = ["-task", "blastn-short", "-dust", "no", "-gapopen", "4", "-gapextend", "2"]
@@ -107,7 +124,7 @@ def run_blast(
         query_file.close()
         target_file.close()
 
-        program = "blastp" if is_protein else "blastn"
+        program = resolve_tool("blastp" if is_protein else "blastn")
         extra_params = BLASTP_PARAMS if is_protein else BLASTN_PARAMS
 
         cmd = [
@@ -311,11 +328,13 @@ def main() -> None:
         logging.error("Input directory not found: %s", args.input)
         sys.exit(1)
 
-    # Check BLAST+ availability
+    # Check BLAST+ availability (and resolve configured binaries)
     try:
-        subprocess.run(["blastn", "-version"], capture_output=True, check=True)
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        logging.error("BLAST+ not found. Install NCBI BLAST+ and ensure blastn/blastp are in PATH.")
+        resolve_tool("blastn")
+        resolve_tool("blastp")
+        subprocess.run([resolve_tool("blastn"), "-version"], capture_output=True, check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        logging.error("BLAST+ not available: %s", exc)
         sys.exit(1)
 
     analyze_directory(
