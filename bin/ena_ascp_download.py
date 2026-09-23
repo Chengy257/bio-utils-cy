@@ -69,12 +69,12 @@ def find_ascp(path: Optional[str] = None) -> str:
             return os.path.abspath(path)
         raise FileNotFoundError(f"Provided ascp path is not executable: {path}")
 
-    # Config-provided path (MYS_ASCP_BIN from config/env.sh) beats PATH
-    env_path = os.environ.get("MYS_ASCP_BIN", "")
+    # Config-provided path (BUC_ASCP_BIN from config/env.sh) beats PATH
+    env_path = os.environ.get("BUC_ASCP_BIN", "")
     if env_path:
         if os.path.isfile(env_path) and os.access(env_path, os.X_OK):
             return os.path.abspath(env_path)
-        raise FileNotFoundError(f"MYS_ASCP_BIN is set but not executable: {env_path}")
+        raise FileNotFoundError(f"BUC_ASCP_BIN is set but not executable: {env_path}")
 
     # Try PATH first
     found = shutil.which("ascp")

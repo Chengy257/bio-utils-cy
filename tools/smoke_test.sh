@@ -19,12 +19,12 @@ set -uo pipefail
 TOOLS_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 REPO_ROOT="$(dirname "${TOOLS_DIR}")"
 
-# Pick up MYS_PYTHON_BIN / MYS_RSCRIPT_BIN when configured.
+# Pick up BUC_PYTHON_BIN / BUC_RSCRIPT_BIN when configured.
 if [ -f "${REPO_ROOT}/config/env.sh" ]; then
     . "${REPO_ROOT}/config/env.sh"
 fi
-PYTHON_BIN="${MYS_PYTHON_BIN:-$(command -v python3 || true)}"
-RSCRIPT_BIN="${MYS_RSCRIPT_BIN:-$(command -v Rscript || true)}"
+PYTHON_BIN="${BUC_PYTHON_BIN:-$(command -v python3 || true)}"
+RSCRIPT_BIN="${BUC_RSCRIPT_BIN:-$(command -v Rscript || true)}"
 
 QUICK=0
 TARGETS=()

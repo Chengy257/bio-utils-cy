@@ -80,10 +80,10 @@ fi
 mkdir -p "${OUT_DIR}"
 
 # -----------------------------------------------------------------------
-# Auto-detect DSSP binary (config MYS_MKDSSP_BIN > PATH candidates)
+# Auto-detect DSSP binary (config BUC_MKDSSP_BIN > PATH candidates)
 # -----------------------------------------------------------------------
-if [ -z "${DSSP_BIN}" ] && [ -n "${MYS_MKDSSP_BIN:-}" ] && [ -x "${MYS_MKDSSP_BIN}" ]; then
-    DSSP_BIN="${MYS_MKDSSP_BIN}"
+if [ -z "${DSSP_BIN}" ] && [ -n "${BUC_MKDSSP_BIN:-}" ] && [ -x "${BUC_MKDSSP_BIN}" ]; then
+    DSSP_BIN="${BUC_MKDSSP_BIN}"
     echo "[INFO] Using DSSP from config: ${DSSP_BIN}"
 fi
 if [ -z "${DSSP_BIN}" ]; then
@@ -105,8 +105,8 @@ fi
 # Auto-detect parallel runner
 # -----------------------------------------------------------------------
 if [ -z "${PARALLEL_RUNNER}" ]; then
-    if [ -n "${MYS_PARALLEL_BIN:-}" ] && [ -x "${MYS_PARALLEL_BIN}" ]; then
-        PARALLEL_RUNNER="${MYS_PARALLEL_BIN}"
+    if [ -n "${BUC_PARALLEL_BIN:-}" ] && [ -x "${BUC_PARALLEL_BIN}" ]; then
+        PARALLEL_RUNNER="${BUC_PARALLEL_BIN}"
     elif command -v parallel &>/dev/null; then
         PARALLEL_RUNNER="parallel"
     elif command -v ParaFly &>/dev/null; then

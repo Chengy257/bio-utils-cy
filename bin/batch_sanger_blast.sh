@@ -90,9 +90,9 @@ if [[ ! -d "${WORK_DIR}" ]]; then
     exit 1
 fi
 
-## ---- Resolve BLAST+ tools (MYS_*_BIN from config/env.sh > PATH) ----
-MAKEBLASTDB_BIN="$(mys_resolve_bin MYS_MAKEBLASTDB_BIN makeblastdb)" || { echo "Error: makeblastdb not found. Install BLAST+ or set MYS_MAKEBLASTDB_BIN." >&2; exit 1; }
-BLASTN_BIN="$(mys_resolve_bin MYS_BLASTN_BIN blastn)" || { echo "Error: blastn not found. Install BLAST+ or set MYS_BLASTN_BIN." >&2; exit 1; }
+## ---- Resolve BLAST+ tools (BUC_*_BIN from config/env.sh > PATH) ----
+MAKEBLASTDB_BIN="$(buc_resolve_bin BUC_MAKEBLASTDB_BIN makeblastdb)" || { echo "Error: makeblastdb not found. Install BLAST+ or set BUC_MAKEBLASTDB_BIN." >&2; exit 1; }
+BLASTN_BIN="$(buc_resolve_bin BUC_BLASTN_BIN blastn)" || { echo "Error: blastn not found. Install BLAST+ or set BUC_BLASTN_BIN." >&2; exit 1; }
 
 ## ---- Cleanup trap ----
 ORIG_DIR="$(pwd)"

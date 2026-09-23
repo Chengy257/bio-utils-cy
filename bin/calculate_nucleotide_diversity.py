@@ -53,13 +53,13 @@ def find_tool(tool_name: str, explicit_path: str = None) -> str:
             return explicit_path
         raise FileNotFoundError(f"Specified {tool_name} path not executable: {explicit_path}")
 
-    # Config-provided path (MYS_<TOOL>_BIN from config/env.sh) beats PATH
-    env_path = os.environ.get(f"MYS_{tool_name.upper()}_BIN", "")
+    # Config-provided path (BUC_<TOOL>_BIN from config/env.sh) beats PATH
+    env_path = os.environ.get(f"BUC_{tool_name.upper()}_BIN", "")
     if env_path:
         if os.path.isfile(env_path) and os.access(env_path, os.X_OK):
             return env_path
         raise FileNotFoundError(
-            f"MYS_{tool_name.upper()}_BIN is set but not executable: {env_path}"
+            f"BUC_{tool_name.upper()}_BIN is set but not executable: {env_path}"
         )
 
     found = shutil.which(tool_name)

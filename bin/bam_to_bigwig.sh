@@ -93,11 +93,11 @@ done
 
 [[ -z "${INPUT}" ]] && log_error "Missing required option: -i/--input"
 
-# Find tools (CLI --bamcoverage > MYS_BAMCOVERAGE_BIN > PATH)
+# Find tools (CLI --bamcoverage > BUC_BAMCOVERAGE_BIN > PATH)
 if [[ -z "${BAMCOV}" ]]; then
-    BAMCOV="$(mys_resolve_bin MYS_BAMCOVERAGE_BIN bamCoverage)" || log_error "bamCoverage not found. Install deepTools or set MYS_BAMCOVERAGE_BIN in config/env.local.sh."
+    BAMCOV="$(buc_resolve_bin BUC_BAMCOVERAGE_BIN bamCoverage)" || log_error "bamCoverage not found. Install deepTools or set BUC_BAMCOVERAGE_BIN in config/env.local.sh."
 fi
-SAMTOOLS="$(mys_resolve_bin MYS_SAMTOOLS_BIN samtools)" || log_error "samtools not found. Install samtools or set MYS_SAMTOOLS_BIN in config/env.local.sh."
+SAMTOOLS="$(buc_resolve_bin BUC_SAMTOOLS_BIN samtools)" || log_error "samtools not found. Install samtools or set BUC_SAMTOOLS_BIN in config/env.local.sh."
 
 # Validate normalization
 VALID_NORMS="RPKM CPM BPM RPGC None"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# doctor.sh — dependency configuration checker for myscripts
+# doctor.sh — dependency configuration checker for bio-utils-cy
 #
 # Validates the tool paths declared in config/env.local.sh against what the
 # scripts in bin/ actually need, and helps fill the gaps:
@@ -31,29 +31,29 @@ fi
 
 # --- Registry: VAR|command used by scripts ------------------------------------
 REGISTRY=(
-    "MYS_PYTHON_BIN|python3"
-    "MYS_RSCRIPT_BIN|Rscript"
-    "MYS_PREFETCH_BIN|prefetch"
-    "MYS_FASTERQ_DUMP_BIN|fasterq-dump"
-    "MYS_FASTQ_DUMP_BIN|fastq-dump"
-    "MYS_FASTQC_BIN|fastqc"
-    "MYS_PARALLEL_BIN|parallel"
-    "MYS_ASCP_BIN|ascp"
-    "MYS_BLASTN_BIN|blastn"
-    "MYS_BLASTP_BIN|blastp"
-    "MYS_MAKEBLASTDB_BIN|makeblastdb"
-    "MYS_MKDSSP_BIN|mkdssp"
-    "MYS_PYMOL_BIN|pymol"
-    "MYS_CHIMERAX_BIN|chimerax"
-    "MYS_PLINK_BIN|plink"
-    "MYS_VCFTOOLS_BIN|vcftools"
-    "MYS_FEATURECOUNTS_BIN|featureCounts"
-    "MYS_SAMTOOLS_BIN|samtools"
-    "MYS_INFER_EXP_BIN|infer_experiment.py"
-    "MYS_BEDTOOLS_BIN|bedtools"
-    "MYS_BAMCOVERAGE_BIN|bamCoverage"
-    "MYS_GTF2BED_BIN|gtf2bed"
-    "MYS_GFF2BED_BIN|gff2bed"
+    "BUC_PYTHON_BIN|python3"
+    "BUC_RSCRIPT_BIN|Rscript"
+    "BUC_PREFETCH_BIN|prefetch"
+    "BUC_FASTERQ_DUMP_BIN|fasterq-dump"
+    "BUC_FASTQ_DUMP_BIN|fastq-dump"
+    "BUC_FASTQC_BIN|fastqc"
+    "BUC_PARALLEL_BIN|parallel"
+    "BUC_ASCP_BIN|ascp"
+    "BUC_BLASTN_BIN|blastn"
+    "BUC_BLASTP_BIN|blastp"
+    "BUC_MAKEBLASTDB_BIN|makeblastdb"
+    "BUC_MKDSSP_BIN|mkdssp"
+    "BUC_PYMOL_BIN|pymol"
+    "BUC_CHIMERAX_BIN|chimerax"
+    "BUC_PLINK_BIN|plink"
+    "BUC_VCFTOOLS_BIN|vcftools"
+    "BUC_FEATURECOUNTS_BIN|featureCounts"
+    "BUC_SAMTOOLS_BIN|samtools"
+    "BUC_INFER_EXP_BIN|infer_experiment.py"
+    "BUC_BEDTOOLS_BIN|bedtools"
+    "BUC_BAMCOVERAGE_BIN|bamCoverage"
+    "BUC_GTF2BED_BIN|gtf2bed"
+    "BUC_GFF2BED_BIN|gff2bed"
 )
 
 # Python packages imported by bin/*.py (import name)
@@ -82,8 +82,8 @@ tool_status() {  # $1=var $2=tool -> echoes "STATUS|resolved_path"
 
 locate_tool() {  # $1=tool name
     local tool="$1" d hit found=0
-    echo "Candidates for '${tool}' (from MYS_LOCATE_DIRS):"
-    for d in ${MYS_LOCATE_DIRS//:/ }; do
+    echo "Candidates for '${tool}' (from BUC_LOCATE_DIRS):"
+    for d in ${BUC_LOCATE_DIRS//:/ }; do
         d="${d/#\~/$HOME}"
         for hit in "${d}/bin/${tool}" "${d}/${tool}" "${d}"/*/bin/"${tool}"; do
             if [ -x "${hit}" ]; then
@@ -135,10 +135,10 @@ done
 py_missing=()
 if [ "${MIGRATE}" -eq 0 ] || [ "${need_action}" -eq 0 ]; then
     echo
-    echo "Python packages (interpreter: ${MYS_PYTHON_BIN:-$(command -v python3 2>/dev/null) or PATH}):"
-    if command -v "${MYS_PYTHON_BIN:-python3}" >/dev/null 2>&1; then
+    echo "Python packages (interpreter: ${BUC_PYTHON_BIN:-$(command -v python3 2>/dev/null) or PATH}):"
+    if command -v "${BUC_PYTHON_BIN:-python3}" >/dev/null 2>&1; then
         for pkg in "${PY_PKGS[@]}"; do
-            if ! "${MYS_PYTHON_BIN:-python3}" -c "import ${pkg}" >/dev/null 2>&1; then
+            if ! "${BUC_PYTHON_BIN:-python3}" -c "import ${pkg}" >/dev/null 2>&1; then
                 py_missing+=("${pkg}")
             fi
         done
@@ -146,35 +146,35 @@ if [ "${MIGRATE}" -eq 0 ] || [ "${need_action}" -eq 0 ]; then
             echo "  all ${#PY_PKGS[@]} packages importable"
         else
             echo "  MISSING: ${py_missing[*]}"
-            echo "  -> install them into that interpreter, or point MYS_PYTHON_BIN at one that has them"
+            echo "  -> install them into that interpreter, or point BUC_PYTHON_BIN at one that has them"
             need_action=1
         fi
     else
-        echo "  interpreter not found — set MYS_PYTHON_BIN"
+        echo "  interpreter not found — set BUC_PYTHON_BIN"
         need_action=1
     fi
 fi
 
 # --- R package checks ----------------------------------------------------------
 r_missing=()
-if [ -n "${MYS_RSCRIPT_BIN}" ] && [ -x "${MYS_RSCRIPT_BIN}" ]; then
+if [ -n "${BUC_RSCRIPT_BIN}" ] && [ -x "${BUC_RSCRIPT_BIN}" ]; then
     echo
-    echo "R packages (Rscript: ${MYS_RSCRIPT_BIN}; R_LIBS: ${R_LIBS:-unset}):"
+    echo "R packages (Rscript: ${BUC_RSCRIPT_BIN}; R_LIBS: ${R_LIBS:-unset}):"
     pkg_list="$(IFS=,; echo "${R_PKGS[*]}")"
     while read -r pkg ok; do
         [ "${ok}" = "TRUE" ] || r_missing+=("${pkg}")
-    done < <("${MYS_RSCRIPT_BIN}" --vanilla -e \
+    done < <("${BUC_RSCRIPT_BIN}" --vanilla -e \
         "for (p in strsplit('${pkg_list}',',')[[1]]) cat(p, requireNamespace(p, quietly=TRUE), '\n')" 2>/dev/null)
     if [ ${#r_missing[@]} -eq 0 ]; then
         echo "  all ${#R_PKGS[@]} packages resolvable"
     else
         echo "  MISSING: ${r_missing[*]}"
-        echo "  -> install into ${MYS_R_LIBS:-the R library} or adjust MYS_R_LIBS / MYS_RSCRIPT_BIN"
+        echo "  -> install into ${BUC_R_LIBS:-the R library} or adjust BUC_R_LIBS / BUC_RSCRIPT_BIN"
         need_action=1
     fi
 else
     echo
-    echo "R packages: SKIPPED (MYS_RSCRIPT_BIN not set or not executable)"
+    echo "R packages: SKIPPED (BUC_RSCRIPT_BIN not set or not executable)"
     need_action=1
 fi
 

@@ -202,7 +202,7 @@ fi
 # Call R heatmap plotting script
 # ---------------------------------------------------------------------------
 echo "[INFO] Calling R heatmap script: ${R_SCRIPT}"
-RSCRIPT_BIN="$(mys_resolve_bin MYS_RSCRIPT_BIN Rscript)" || { echo "ERROR: Rscript not found. Set MYS_RSCRIPT_BIN in config/env.local.sh." >&2; exit 1; }
+RSCRIPT_BIN="$(buc_resolve_bin BUC_RSCRIPT_BIN Rscript)" || { echo "ERROR: Rscript not found. Set BUC_RSCRIPT_BIN in config/env.local.sh." >&2; exit 1; }
 "${RSCRIPT_BIN}" "${R_SCRIPT}" "${FILELIST}" "${SAMPLE_HEADER}" "${OUT_PREFIX}"
 echo "[INFO] R script completed"
 

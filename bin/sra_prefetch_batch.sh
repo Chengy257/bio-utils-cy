@@ -12,8 +12,8 @@
 # Changelog (vs v2.0.0):
 #   v2.1.1  2026-09-24
 #   - Tool defaults may come from the project configuration (config/env.sh):
-#     MYS_PREFETCH_BIN, MYS_FASTERQ_DUMP_BIN / MYS_FASTQ_DUMP_BIN (by mode),
-#     MYS_PARALLEL_BIN, MYS_FASTQC_BIN. CLI options still take precedence,
+#     BUC_PREFETCH_BIN, BUC_FASTERQ_DUMP_BIN / BUC_FASTQ_DUMP_BIN (by mode),
+#     BUC_PARALLEL_BIN, BUC_FASTQC_BIN. CLI options still take precedence,
 #     then PATH as before.
 #   v2.1.0  2026-09-19
 #   - FIX: bulk mode no longer passes --threads to fastq-dump. fastq-dump has
@@ -144,10 +144,10 @@ OUTDIR="./sra_download"
 THREADS=4
 SC_MODE=false
 RUN_FASTQC=false
-PREFETCH_BIN="${MYS_PREFETCH_BIN:-}"
+PREFETCH_BIN="${BUC_PREFETCH_BIN:-}"
 DUMP_BIN=""
-PARALLEL_BIN="${MYS_PARALLEL_BIN:-}"
-FASTQC_BIN="${MYS_FASTQC_BIN:-}"
+PARALLEL_BIN="${BUC_PARALLEL_BIN:-}"
+FASTQC_BIN="${BUC_FASTQC_BIN:-}"
 MAX_SIZE="100G"
 DUMP_THREADS=""
 DRY_RUN=false
@@ -231,9 +231,9 @@ fi
 # Config-provided default for the dump binary (CLI --dump-bin wins).
 if [[ -z "${DUMP_BIN}" ]]; then
     if [[ "${DUMP_NAME}" == "fasterq-dump" ]]; then
-        DUMP_BIN="${MYS_FASTERQ_DUMP_BIN:-}"
+        DUMP_BIN="${BUC_FASTERQ_DUMP_BIN:-}"
     else
-        DUMP_BIN="${MYS_FASTQ_DUMP_BIN:-}"
+        DUMP_BIN="${BUC_FASTQ_DUMP_BIN:-}"
     fi
 fi
 DUMP_BIN="$(resolve_bin "${DUMP_NAME}" "${DUMP_BIN}" "dump-bin")"

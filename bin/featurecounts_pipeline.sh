@@ -84,11 +84,11 @@ done
 [[ ! -f "${GTF}" ]]     && log_error "GTF file not found: ${GTF}"
 [[ ! -f "${BED}" ]]     && log_error "BED file not found: ${BED}"
 
-# Find tools (MYS_*_BIN from config/env.sh > PATH)
-SAMTOOLS="$(mys_resolve_bin MYS_SAMTOOLS_BIN samtools)" || log_error "samtools not found. Install samtools or set MYS_SAMTOOLS_BIN."
-INFER_EXP="$(mys_resolve_bin MYS_INFER_EXP_BIN infer_experiment.py)" || log_error "infer_experiment.py not found. Install RSeQC or set MYS_INFER_EXP_BIN."
-FEATURECOUNTS="$(mys_resolve_bin MYS_FEATURECOUNTS_BIN featureCounts)" || log_error "featureCounts not found. Install subread or set MYS_FEATURECOUNTS_BIN."
-RSCRIPT_BIN="$(mys_resolve_bin MYS_RSCRIPT_BIN Rscript)" || log_error "Rscript not found. Set MYS_RSCRIPT_BIN in config/env.local.sh."
+# Find tools (BUC_*_BIN from config/env.sh > PATH)
+SAMTOOLS="$(buc_resolve_bin BUC_SAMTOOLS_BIN samtools)" || log_error "samtools not found. Install samtools or set BUC_SAMTOOLS_BIN."
+INFER_EXP="$(buc_resolve_bin BUC_INFER_EXP_BIN infer_experiment.py)" || log_error "infer_experiment.py not found. Install RSeQC or set BUC_INFER_EXP_BIN."
+FEATURECOUNTS="$(buc_resolve_bin BUC_FEATURECOUNTS_BIN featureCounts)" || log_error "featureCounts not found. Install subread or set BUC_FEATURECOUNTS_BIN."
+RSCRIPT_BIN="$(buc_resolve_bin BUC_RSCRIPT_BIN Rscript)" || log_error "Rscript not found. Set BUC_RSCRIPT_BIN in config/env.local.sh."
 
 # Create output directory
 EXPR_DIR="${OUT_DIR}/expression"

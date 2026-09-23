@@ -1,4 +1,4 @@
-# myscripts
+# bio-utils-cy
 
 Personal bioinformatics toolkit for next-generation sequencing (NGS) data analysis.
 
@@ -17,7 +17,7 @@ This repository contains standalone utility scripts covering RNA-seq, ChIP-seq, 
 ## Directory Structure
 
 ```
-myscripts/
+bio-utils-cy/
 ├── bin/                    # All executable scripts, flat — the only place to look
 ├── config/
 │   ├── env.sh               # Unified environment / dependency configuration (committed defaults)
@@ -36,7 +36,7 @@ myscripts/
 
 ```bash
 # One-time: put the toolkit on your PATH (add to ~/.bashrc)
-export PATH="$HOME/myscripts/bin:$PATH"
+export PATH="$HOME/bio-utils-cy/bin:$PATH"
 
 # One-time per machine: dependency configuration
 #   cp config/env.local.sh.example config/env.local.sh   then fill in tool paths
@@ -500,12 +500,14 @@ bash batch_sanger_blast.sh -d database.fa -w work_dir/ -t 8 -o sanger_BLAST
 
 ## Configuration
 
-All machine-dependent settings live in one place: `config/env.local.sh` (copy from `config/env.local.sh.example`; gitignored, never leaves the machine). `config/env.sh` holds the committed defaults and the `mys_resolve_bin` helper. Every value is a **path** — there is no environment activation in this mechanism; conda-installed binaries are self-contained and work when called by absolute path.
+All machine-dependent settings live in one place: `config/env.local.sh` (copy from `config/env.local.sh.example`; gitignored, never leaves the machine). `config/env.sh` holds the committed defaults and the `buc_resolve_bin` helper. Every value is a **path** — there is no environment activation in this mechanism; conda-installed binaries are self-contained and work when called by absolute path.
+
+Environment-variable prefix `BUC_` abbreviates the repository name, **bio-utils-cy**.
 
 Tool resolution follows one fixed order, everywhere:
 
 ```
-CLI option  >  MYS_*_BIN path variable  >  PATH  >  error (+ hint to run tools/doctor.sh)
+CLI option  >  BUC_*_BIN path variable  >  PATH  >  error (+ hint to run tools/doctor.sh)
 ```
 
 Consumed variables:
@@ -513,11 +515,11 @@ Consumed variables:
 | Variable | Used by |
 |----------|---------|
 | `NCBI_EMAIL`, `NCBI_API_KEY` | SRA/ENA fetch & search scripts (E-utilities contact / rate limits) |
-| `MYS_THREADS` | default thread count for scripts accepting `-t/--threads` |
-| `MYS_PYTHON_BIN`, `MYS_RSCRIPT_BIN`, `MYS_R_LIBS` | interpreters and R package library (exported as `R_LIBS`) |
-| `MYS_PREFETCH_BIN`, `MYS_FASTERQ_DUMP_BIN`, `MYS_FASTQ_DUMP_BIN`, … | one slot per external tool — see `config/env.local.sh.example` for the full list |
-| `MYS_EXTRA_PATH` | escape hatch: directories prepended to PATH for scripts that look up companion binaries by name |
-| `MYS_HOME` | set automatically (repository root) |
+| `BUC_THREADS` | default thread count for scripts accepting `-t/--threads` |
+| `BUC_PYTHON_BIN`, `BUC_RSCRIPT_BIN`, `BUC_R_LIBS` | interpreters and R package library (exported as `R_LIBS`) |
+| `BUC_PREFETCH_BIN`, `BUC_FASTERQ_DUMP_BIN`, `BUC_FASTQ_DUMP_BIN`, … | one slot per external tool — see `config/env.local.sh.example` for the full list |
+| `BUC_EXTRA_PATH` | escape hatch: directories prepended to PATH for scripts that look up companion binaries by name |
+| `BUC_HOME` | set automatically (repository root) |
 
 Maintenance commands:
 
@@ -539,7 +541,7 @@ Rules for new or modified scripts — keep the toolbox uniform:
 - **Location & permissions**: every executable lives flat in `bin/` with the executable bit set. Non-CLI shared code (if it ever appears) goes in `lib/`.
 - **Naming**: lowercase `snake_case`, verb-first (`plot_*`, `fetch_*`, `batch_*`, `calculate_*`); language is visible from the extension `.py` / `.R` / `.sh`.
 - **CLI**: Python → argparse; R → getopt; Bash → getopts. Every script must answer `-h` with a usage message and exit cleanly.
-- **Configuration**: bash scripts source `config/env.sh` (one line, see [Configuration](#configuration)). External tools are resolved through `mys_resolve_bin` (Python: an equivalent `resolve_tool` helper) with the fixed order: CLI option > `MYS_*_BIN` path variable > `PATH`. Never hardcode absolute tool paths in code.
+- **Configuration**: bash scripts source `config/env.sh` (one line, see [Configuration](#configuration)). External tools are resolved through `buc_resolve_bin` (Python: an equivalent `resolve_tool` helper) with the fixed order: CLI option > `BUC_*_BIN` path variable > `PATH`. Never hardcode absolute tool paths in code.
 - **Logging**: Python `logging` to stderr; Bash `[INFO]/[WARN]/[ERROR]` prefixes to stderr; R `message()`.
 - **Exit codes**: `0` on success, non-zero on failure. Bash: `set -euo pipefail`. Python: `sys.exit(1)` on handled errors. R: `quit(status=1)`.
 - **Headers**: description + changelog comment block; no machine-specific absolute paths in code or comments.

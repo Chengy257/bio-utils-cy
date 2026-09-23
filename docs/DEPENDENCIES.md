@@ -137,5 +137,5 @@ Legend: **Tools** = external executables · **Py** = Python packages (import nam
 
 - **External tools** (21): prefetch, fasterq-dump, fastq-dump, fastqc, parallel, ascp, blastn, blastp, makeblastdb, mkdssp, pymol, ChimeraX, plink, vcftools, featureCounts, samtools, infer_experiment.py, bedtools, bamCoverage, gtf2bed, gff2bed — pin each in `config/env.local.sh`.
 - **Python** (13): biopython, pandas, numpy, matplotlib, networkx, scipy, scikit-learn, community (python-louvain), tqdm, lxml, pyteomics, pybedtools, markov-clustering.
-- **R** (33): see tables above — the Rscript interpreter and library path come from `MYS_RSCRIPT_BIN` / `MYS_R_LIBS`.
+- **R** (33): see tables above — the Rscript interpreter and library path come from `BUC_RSCRIPT_BIN` / `BUC_R_LIBS`.
 - **Credentials**: `NCBI_EMAIL`, `NCBI_API_KEY` for NCBI E-utilities scripts.

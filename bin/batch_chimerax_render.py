@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 
 
 def detect_chimerax() -> str:
-    """Locate the ChimeraX executable: MYS_CHIMERAX_BIN (config/env.sh) first, then PATH."""
-    env_path = os.environ.get("MYS_CHIMERAX_BIN", "")
+    """Locate the ChimeraX executable: BUC_CHIMERAX_BIN (config/env.sh) first, then PATH."""
+    env_path = os.environ.get("BUC_CHIMERAX_BIN", "")
     if env_path and os.path.isfile(env_path) and os.access(env_path, os.X_OK):
         return env_path
     for name in ("chimerax", "ChimeraX"):

@@ -34,11 +34,11 @@ def calculate_effective_length(input_file: str, output_file: str = None) -> int:
     """
     import pybedtools
 
-    # Honor MYS_BEDTOOLS_BIN (config/env.sh) for the underlying bedtools binary
-    bedtools_bin = os.environ.get("MYS_BEDTOOLS_BIN", "")
+    # Honor BUC_BEDTOOLS_BIN (config/env.sh) for the underlying bedtools binary
+    bedtools_bin = os.environ.get("BUC_BEDTOOLS_BIN", "")
     if bedtools_bin:
         if not (os.path.isfile(bedtools_bin) and os.access(bedtools_bin, os.X_OK)):
-            raise FileNotFoundError(f"MYS_BEDTOOLS_BIN is set but not executable: {bedtools_bin}")
+            raise FileNotFoundError(f"BUC_BEDTOOLS_BIN is set but not executable: {bedtools_bin}")
         pybedtools.helpers.set_bedtools_path(os.path.dirname(bedtools_bin))
 
     bed = pybedtools.BedTool(input_file)

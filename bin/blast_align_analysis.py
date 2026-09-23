@@ -34,16 +34,16 @@ __version__ = "1.0.0"
 
 
 def resolve_tool(name: str) -> str:
-    """Resolve an external tool: MYS_<NAME>_BIN (config/env.sh) first, then PATH."""
-    env_path = os.environ.get(f"MYS_{name.upper()}_BIN", "")
+    """Resolve an external tool: BUC_<NAME>_BIN (config/env.sh) first, then PATH."""
+    env_path = os.environ.get(f"BUC_{name.upper()}_BIN", "")
     if env_path:
         if os.path.isfile(env_path) and os.access(env_path, os.X_OK):
             return env_path
-        raise FileNotFoundError(f"MYS_{name.upper()}_BIN is set but not executable: {env_path}")
+        raise FileNotFoundError(f"BUC_{name.upper()}_BIN is set but not executable: {env_path}")
     found = shutil.which(name)
     if not found:
         raise FileNotFoundError(
-            f"{name} not found in PATH; set MYS_{name.upper()}_BIN in config/env.local.sh"
+            f"{name} not found in PATH; set BUC_{name.upper()}_BIN in config/env.local.sh"
         )
     return found
 
