@@ -1,8 +1,8 @@
 # bio-utils-cy
 
-Personal bioinformatics toolkit for next-generation sequencing (NGS) data analysis.
+Personal bioinformatics toolkit for bioinformatic data analysis.
 
-This repository contains standalone utility scripts covering RNA-seq, ChIP-seq, CUT&Tag, ATAC-seq, sRNA-seq, ribosome profiling, lncRNA analysis, proteomics, and general data processing.
+This repository contains standalone utility scripts covering next-generation sequencing (NGS) and general data processing.
 
 - **`bin/`** — All executable scripts in one flat directory (Python / R / Bash), production quality with robust error handling, full CLI help, and consistent code style. Functional categories are documented in the index below, not in the file tree.
 - **`config/`** — Unified project-wide configuration shared by all scripts (see [Configuration](#configuration)).
