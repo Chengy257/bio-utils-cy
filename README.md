@@ -1,6 +1,6 @@
 # bio-utils-cy
 
-Personal bioinformatics toolkit for bioinformatic data analysis.
+A personal toolkit for bioinformatic data analysis.
 
 This repository contains standalone utility scripts covering next-generation sequencing (NGS) and general data processing.
 
@@ -8,7 +8,6 @@ This repository contains standalone utility scripts covering next-generation seq
 - **`config/`** — Unified project-wide configuration shared by all scripts (see [Configuration](#configuration)).
 - **`tools/`** — Maintenance utilities: `doctor.sh` (dependency checks & path locator) and `smoke_test.sh` (CLI regression).
 - **`docs/`** — Reference material: per-script dependency matrix (`DEPENDENCIES.md`).
-- **`archives/`** — Superseded and pre-rewrite scripts; kept locally only, **not tracked** in this repository.
 
 > The scripts in `bin/` were refactored and improved with the assistance of AI (Claude), adding proper argument parsing, logging, input validation, and comprehensive documentation while preserving the original algorithmic logic.
 
@@ -28,7 +27,6 @@ bio-utils-cy/
 ├── tools/
 │   ├── smoke_test.sh        # CLI regression: every script must answer -h
 │   └── doctor.sh            # Dependency checks, path locator, migration checklist
-├── archives/                # Superseded / pre-rewrite scripts — local only, not tracked
 └── README.md                # Script index — functional categories live here, not in directories
 ```
 
