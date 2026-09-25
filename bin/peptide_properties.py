@@ -1,4 +1,24 @@
 #!/usr/bin/env python3
+#########################################################################
+# File Name: peptide_properties.py
+# Author: ChengYu
+# Description: Calculate peptide physicochemical properties (MW, charge,
+#              pI, hydropathy, instability, etc.) from a FASTA file.
+# Created Time: 2026
+#
+# Changelog:
+#   v1.1.0  2026-09-25
+#   - FIX: output rows are now written in FASTA input order; rows were
+#     previously emitted in thread-completion order (non-deterministic).
+#   - FIX: the aggregate distribution plots now average the per-sequence
+#     percentages (amino-acid composition, secondary-structure fractions)
+#     instead of summing them across sequences, which had no meaningful
+#     unit.
+#   - FIX: --threads values below 1 fail with a clean error instead of a
+#     ThreadPoolExecutor traceback.
+#   - NOTE: --threads is kept for compatibility; the ProtParam analysis is
+#     pure Python and CPU-bound, so threads give little speedup (GIL).
+#########################################################################
 """
 Calculate peptide physicochemical properties (MW, charge, pI, hydropathy,
 instability, etc.) from a FASTA file.
@@ -7,7 +27,7 @@ Author: ChengYu
 Created Time: 2026
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import argparse
 import csv
@@ -96,12 +116,14 @@ def visualize_properties(results: List[Dict[str, Any]], output_prefix: str) -> N
     turn = [r["turn_fraction"] for r in results]
     sheet = [r["sheet_fraction"] for r in results]
 
-    # Aggregate amino-acid composition
+    # Aggregate amino-acid composition: mean percentage per residue
+    n = len(results)
     aa_totals: Dict[str, float] = {}
     for r in results:
         comp = r.get("amino_acid_composition", {})
         for aa, pct in comp.items():
             aa_totals[aa] = aa_totals.get(aa, 0.0) + pct
+    aa_means = {aa: total / n for aa, total in aa_totals.items()}
 
     fig, axes = plt.subplots(3, 3, figsize=(15, 12))
 
@@ -121,16 +143,16 @@ def visualize_properties(results: List[Dict[str, Any]], output_prefix: str) -> N
     axes[1, 0].set_title("Instability Index")
     axes[1, 0].grid(axis="y", alpha=0.75)
 
-    axes[1, 1].bar(sorted(aa_totals.keys()), [aa_totals[a] for a in sorted(aa_totals.keys())], color="lightblue")
-    axes[1, 1].set_title("Amino Acid Composition")
+    axes[1, 1].bar(sorted(aa_means.keys()), [aa_means[a] for a in sorted(aa_means.keys())], color="lightblue")
+    axes[1, 1].set_title("Mean Amino Acid Composition (%)")
     axes[1, 1].grid(axis="y", alpha=0.75)
 
     axes[1, 2].bar(
         ["Helix", "Turn", "Sheet"],
-        [sum(helix), sum(turn), sum(sheet)],
+        [sum(helix) / n, sum(turn) / n, sum(sheet) / n],
         color=["gold", "lightgreen", "lightcoral"],
     )
-    axes[1, 2].set_title("Secondary Structure Fractions")
+    axes[1, 2].set_title("Mean Secondary Structure Fractions")
     axes[1, 2].grid(axis="y", alpha=0.75)
 
     axes[2, 0].hist(gravy, bins=30, color="gold")
@@ -169,12 +191,8 @@ def process_fasta(
 
     results: List[Dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=threads) as executor:
-        futures = {
-            executor.submit(analyze_sequence, seq, rid): rid
-            for rid, seq in sequences
-        }
-        for future in as_completed(futures):
-            result = future.result()
+        # map preserves input order (as_completed did not)
+        for result in executor.map(lambda s: analyze_sequence(s[1], s[0]), sequences):
             if result is not None:
                 results.append(result)
 
@@ -220,7 +238,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-i", "--input", required=True, help="Input FASTA file.")
     parser.add_argument("-o", "--output", required=True, help="Output TSV file.")
     parser.add_argument("--visualize", action="store_true", help="Generate property distribution plots.")
-    parser.add_argument("--threads", type=int, default=4, help="Number of parallel threads (default: 4).")
+    parser.add_argument("--threads", type=int, default=4,
+                        help="Number of parallel threads (default: 4). Little "
+                             "speedup expected: the analysis is pure Python.")
     return parser
 
 
@@ -232,6 +252,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         level=getattr(logging, args.log_level),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+
+    if args.threads < 1:
+        parser.error("--threads must be >= 1")
 
     process_fasta(args.input, args.output, args.visualize, args.threads)
 
