@@ -5,53 +5,76 @@
 # Description: Append sequential numbers to duplicate values in a
 #              single-column data file.
 # Created Time: 2026
-#########################################################################
-# Append sequential numbers to duplicate values.
 #
-# For each unique value in the input column, appends _1, _2, _3, etc.
-# to duplicates, preserving the original row order.
+# Changelog:
+#   v1.1.0  2026-09-25
+#   - FIX: values are read verbatim as strings (colClasses="character",
+#     comment.char="", quote=""); previously numeric-looking values were
+#     type-converted (leading zeros lost) and '#' or quotes truncated them.
+#   - FIX: calling the script with no arguments printed usage and then
+#     crashed with an R error (NA in a conditional); it now exits cleanly.
+#   - CHANGE: CLI moved to getopt (-i/-o) per project convention; the old
+#     positional form `number_duplicates.R in.tsv out.tsv` is gone.
+#   - DOC: help now states that EVERY value receives a _N suffix (its
+#     occurrence index), guaranteeing uniqueness (unchanged behavior).
+#   - CLEANUP: removed unused freq table; summary line goes to stderr;
+#     occurrence counter vectorized.
+#########################################################################
 
-args <- commandArgs(trailingOnly = TRUE)
+spec <- matrix(c(
+    "input",  "i", 1, "character",
+    "output", "o", 1, "character",
+    "help",   "h", 0, "logical"
+), byrow = TRUE, ncol = 4)
 
-if (length(args) < 2 || args[1] == "--help" || args[1] == "-h") {
-    cat("Usage: Rscript number_duplicates.R <input.tsv> <output.tsv>\n")
-    cat("\nAppend sequential numbers to duplicate values in column 1.\n")
-    cat("Each unique value gets _1, _2, _3, ... appended to duplicates.\n")
-    cat("\nInput:  Single-column TSV file\n")
-    cat("Output: Two-column TSV: original_value, numbered_value\n")
-    quit(status = if (args[1] == "--help" || args[1] == "-h") 0 else 1)
+usage <- function() {
+    cat("Usage: Rscript number_duplicates.R -i <input.tsv> -o <output.tsv>\n")
+    cat("\nAppend sequential occurrence numbers to the values in column 1.\n")
+    cat("Every value receives a _N suffix (1st occurrence _1, 2nd _2, ...),\n")
+    cat("so the numbered column is guaranteed unique. Row order is preserved.\n")
+    cat("\nInput:  single-column TSV file\n")
+    cat("Output: two-column TSV: original_value <tab> numbered_value\n")
+    cat("\nOptions:\n")
+    cat("  -i, --input    input TSV file (required)\n")
+    cat("  -o, --output   output TSV file (required)\n")
+    cat("  -h, --help     show this help\n")
 }
 
-input_file <- args[1]
-output_file <- args[2]
-
-# Validate input
-if (!file.exists(input_file)) {
-    stop("Input file not found: ", input_file)
+opt <- getopt::getopt(spec)
+if (!is.null(opt$help)) {
+    usage()
+    quit(status = 0)
+}
+if (is.null(opt$input) || is.null(opt$output)) {
+    usage()
+    quit(status = 1)
 }
 
-# Read data
-data <- read.table(input_file, sep = "\t", header = FALSE, stringsAsFactors = FALSE, encoding = "UTF-8")
-if (ncol(data) < 1) {
-    stop("Input file has no columns.")
+if (!file.exists(opt$input)) {
+    message("ERROR: input file not found: ", opt$input)
+    quit(status = 1)
+}
+
+data <- tryCatch(
+    read.table(opt$input, sep = "\t", header = FALSE,
+               colClasses = "character", comment.char = "", quote = "",
+               encoding = "UTF-8"),
+    error = function(e) NULL
+)
+if (is.null(data) || nrow(data) < 1) {
+    message("ERROR: input file has no data rows: ", opt$input)
+    quit(status = 1)
 }
 
 values <- data[, 1]
-freq <- table(values)
 
-# Build numbered vector
-numbered <- character(length(values))
-freq_counter <- rep(0, length(unique(values)))
-names(freq_counter) <- unique(values)
+# occurrence index per value, in input order (replaces the old for-loop)
+occurrence <- ave(rep(1L, length(values)), values, FUN = cumsum)
+numbered <- paste0(values, "_", occurrence)
 
-for (i in seq_along(values)) {
-    v <- values[i]
-    freq_counter[v] <- freq_counter[v] + 1
-    numbered[i] <- paste0(v, "_", freq_counter[v])
-}
+result <- data.frame(original = values, numbered = numbered,
+                     stringsAsFactors = FALSE)
+write.table(result, file = opt$output, sep = "\t", col.names = FALSE,
+            row.names = FALSE, quote = FALSE)
 
-# Write output (original order)
-result <- data.frame(original = values, numbered = numbered, stringsAsFactors = FALSE)
-write.table(result, file = output_file, sep = "\t", col.names = FALSE, row.names = FALSE, quote = FALSE)
-
-cat("Processed", length(values), "rows ->", output_file, "\n")
+message("Processed ", length(values), " rows -> ", opt$output)
