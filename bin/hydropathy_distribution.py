@@ -1,4 +1,22 @@
 #!/usr/bin/env python3
+#########################################################################
+# File Name: hydropathy_distribution.py
+# Author: ChengYu
+# Description: Calculate hydropathy distribution using sliding window
+#              analysis (Kyte-Doolittle).
+# Created Time: 2026
+#
+# Changelog:
+#   v1.1.0  2026-09-25
+#   - FIX: --window-size values below 1 fail with a clean error; window
+#     sizes larger than a sequence now produce a warned NA row instead of
+#     NaN warnings (window=0) or silently wrong reversed slices (w<0),
+#     and no empty plot is saved for such sequences.
+#   - FIX: non-standard residues (X, B, ...) are warned about per sequence
+#     (they are still scored as 0.0, now documented in the help).
+#   - FIX: plot filenames are sanitized (a record id containing '/' or
+#     other path characters previously crashed savefig).
+#########################################################################
 """
 Calculate hydropathy distribution using sliding window analysis (Kyte-Doolittle).
 
@@ -6,11 +24,12 @@ Author: ChengYu
 Created Time: 2026
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import argparse
 import csv
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -82,7 +101,8 @@ def plot_hydropathy(
     ax.grid(alpha=0.3)
 
     ext = fmt if fmt in ("pdf", "png", "svg") else "pdf"
-    out_path = str(Path(output_dir) / f"hydropathy_{record_id}.{ext}")
+    safe_id = re.sub(r"[^A-Za-z0-9._-]", "_", record_id)
+    out_path = str(Path(output_dir) / f"hydropathy_{safe_id}.{ext}")
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return out_path
@@ -112,7 +132,18 @@ def process_fasta(
     rows: List[Dict[str, str]] = []
     for rec in records:
         seq = str(rec.seq).upper()
+        unknown = sorted({aa for aa in set(seq) if aa not in KYTE_DOOLITTLE})
+        if unknown:
+            logger.warning(
+                "%s: unknown residue(s) [%s] scored as 0.0",
+                rec.id, ", ".join(unknown),
+            )
         scores = calculate_hydropathy_distribution(seq, window_size)
+        if not scores:
+            logger.warning(
+                "%s: length %d is shorter than window %d; no windows computed",
+                rec.id, len(seq), window_size,
+            )
         rows.append({
             "id": rec.id,
             "length": str(len(seq)),
@@ -122,7 +153,7 @@ def process_fasta(
             "hydropathy_scores": ",".join(f"{s:.4f}" for s in scores),
         })
 
-        if visualize:
+        if visualize and scores:
             out_plot = plot_hydropathy(rec.id, scores, window_size, plot_dir, plot_fmt)
             logger.info("Plot saved: %s", out_plot)
 
@@ -160,7 +191,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-o", "--output", default="hydropathy.csv", help="Output CSV file (default: hydropathy.csv).")
     parser.add_argument(
         "-w", "--window-size", type=int, default=10,
-        help="Sliding-window size (default: 10).",
+        help="Sliding-window size (default: 10; must be >= 1). Non-standard "
+             "residues are scored as 0.0.",
     )
     parser.add_argument("--visualize", action="store_true", help="Generate per-sequence hydropathy plots.")
     parser.add_argument("--plot-dir", default="hydropathy_plots", help="Directory for plots (default: hydropathy_plots).")
@@ -179,6 +211,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         level=getattr(logging, args.log_level),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+
+    if args.window_size < 1:
+        parser.error("--window-size must be >= 1")
 
     process_fasta(
         args.input, args.output, args.window_size,
