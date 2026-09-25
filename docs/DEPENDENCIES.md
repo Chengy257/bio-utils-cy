@@ -44,7 +44,7 @@ Legend: **Tools** = external executables · **Py** = Python packages (import nam
 |--------|-------|----|
 | `multi_file_join.py` | — | pandas |
 | `transpose_table.sh` | — | — |
-| `number_duplicates.R` | — | — |
+| `number_duplicates.R` | getopt | — |
 | `tissue_specificity_tau.py` | — | numpy, pandas |
 
 ## Gene Annotation

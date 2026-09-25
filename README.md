@@ -197,7 +197,7 @@ python multi_file_join.py -i file_list.txt -c 1,3 -o merged.tsv --how inner
 bash transpose_table.sh -i matrix.tsv -o transposed.tsv
 
 # Number duplicates
-Rscript number_duplicates.R input.tsv output.tsv
+Rscript number_duplicates.R -i input.tsv -o output.tsv
 
 # Tissue specificity
 python tissue_specificity_tau.py -i expression.tsv -o tau.tsv
