@@ -5,6 +5,16 @@
 # Description: Calculate amino acid composition frequencies from
 #              protein FASTA files.
 # Created Time: 2026
+#
+# Changelog:
+#   v1.1.0  2026-09-25
+#   - FIX: with --standard-only the frequencies are now relative to the
+#     standard residues only (they sum to 100%); previously non-standard
+#     characters (X, *, ...) were excluded from the counts but still
+#     inflated the denominator, so the table silently summed to < 100%.
+#     The number of skipped residues is logged.
+#   - CLEANUP: removed the dead internal `uppercase` parameter (sequences
+#     are always uppercased before counting, unchanged behavior).
 #########################################################################
 """Calculate amino acid composition from protein FASTA files.
 
@@ -18,7 +28,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 STANDARD_AA = set("ACDEFGHIKLMNPQRSTVWY")
 
@@ -45,7 +55,6 @@ def compute_aa_frequency(
     input_path: str,
     output_path: str,
     sort_mode: str = "alpha",
-    uppercase: bool = True,
     standard_only: bool = False,
 ) -> None:
     """Compute amino acid frequencies and write TSV output.
@@ -54,24 +63,29 @@ def compute_aa_frequency(
         input_path: Input protein FASTA file.
         output_path: Output TSV file.
         sort_mode: 'alpha' or 'freq'.
-        uppercase: Convert sequences to uppercase.
-        standard_only: Only count the 20 standard amino acids.
+        standard_only: Only count the 20 standard amino acids; frequencies
+            are relative to standard residues only.
     """
     counts = defaultdict(int)
     total = 0
+    skipped = 0
 
     for seq in parse_fasta_sequences(input_path):
-        if uppercase:
-            seq = seq.upper()
+        seq = seq.upper()
         for aa in seq:
             if standard_only and aa not in STANDARD_AA:
+                skipped += 1
                 continue
             counts[aa] += 1
-        total += len(seq)
+            total += 1
 
     if total == 0:
         logging.error("No amino acids found in input file.")
         sys.exit(1)
+
+    if skipped:
+        logging.info("Skipped %d non-standard residue(s)%s.", skipped,
+                     " (--standard-only)" if standard_only else "")
 
     frequencies = {aa: (count / total) * 100 for aa, count in counts.items()}
 
@@ -97,6 +111,12 @@ def build_parser() -> argparse.ArgumentParser:
 examples:
   python amino_acid_frequency.py -i proteins.fa -o aa_freq.tsv
   python amino_acid_frequency.py -i proteins.fa -o aa_freq.tsv --sort freq --standard-only
+
+notes:
+  Sequences are uppercased before counting. Without --standard-only every
+  residue character (including *, X, B, Z...) is counted as-is; with
+  --standard-only non-standard residues are dropped and frequencies are
+  relative to the standard residues only (sum to 100%).
 """,
     )
     parser.add_argument("-i", "--input", type=str, required=True, help="Input protein FASTA file.")
@@ -107,7 +127,8 @@ examples:
     )
     parser.add_argument(
         "--standard-only", action="store_true",
-        help="Only count the 20 standard amino acids (ACDEFGHIKLMNPQRSTVWY).",
+        help="Count only the 20 standard amino acids (ACDEFGHIKLMNPQRSTVWY); "
+             "frequencies are relative to standard residues only.",
     )
     parser.add_argument(
         "--log-level", type=str, default="INFO",

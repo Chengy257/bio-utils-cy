@@ -5,6 +5,17 @@
 # Description: Calculate Kozak consensus sequence similarity score
 #              for translation initiation sites.
 # Created Time: 2026
+#
+# Changelog:
+#   v1.1.0  2026-09-25
+#   - FIX: warn when the input sequence does not have ATG at positions
+#     10-12 (previously a mis-aligned window was scored silently and
+#     could still receive a deceptively high score, since the ATG
+#     positions carry zero weight in the matrix).
+#   - DOC: scoring matrix provenance annotated at the matrix definition.
+#   - DOC: the --seq example in the help text had its ATG at positions 6-8
+#     instead of the documented 10-12; replaced with a correctly centered
+#     sequence.
 #########################################################################
 """Calculate Kozak consensus sequence similarity score.
 
@@ -22,10 +33,13 @@ from pathlib import Path
 
 import numpy as np
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 # Position-specific scoring matrix (23 positions x 5 bases: A, T, G, C, N)
 # Columns: A=0, T=1, G=2, C=3, N=4
+# Source: derived from annotated TIS data of the TIS-Predictor project
+# (https://github.com/Agleason1/TIS-Predictor). Rows 10-12 (the ATG start
+# codon) are intentionally all-zero and contribute nothing to the score.
 KOZAK_WEIGHTS = np.array([
     [0.04210526, 0.00000000, 0.03157895, 0.05263158, 0.00000000],
     [0.04210526, 0.05263158, 0.10526316, 0.06250000, 0.00000000],
@@ -75,6 +89,12 @@ def kozak_score(sequence: str) -> float:
         raise ValueError(f"Sequence must be {REQUIRED_LENGTH} bases long, got {len(sequence)}.")
 
     seq = sequence.upper().replace("U", "T")
+    if seq[10:13] != "ATG":
+        logging.warning(
+            "Sequence does not have ATG at positions 10-12 (found '%s'); "
+            "the score may be meaningless for a mis-aligned window.",
+            seq[10:13],
+        )
     score = 0.0
     for i, base in enumerate(seq):
         idx = BASE_TO_IDX.get(base, 4)  # Unknown bases map to N column
@@ -140,8 +160,8 @@ The input sequence must be exactly 23 bp with the ATG start codon centered
 at positions 10-12 (0-indexed). The score ranges from 0 to 1.
 
 examples:
-  # Score a single sequence
-  python kozak_similarity_score.py -s GCCACCATGGCGATCGATCGATC
+  # Score a single sequence (ATG centered at positions 10-12, 0-indexed)
+  python kozak_similarity_score.py -s CGCCGCCACCATGGCGGCGGAGG
 
   # Batch score from FASTA
   python kozak_similarity_score.py -i tis_sequences.fa -o scores.tsv

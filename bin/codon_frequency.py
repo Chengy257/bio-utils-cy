@@ -4,6 +4,16 @@
 # Author: ChengYu
 # Description: Calculate codon usage frequencies from nucleotide FASTA.
 # Created Time: 2026
+#
+# Changelog:
+#   v1.1.0  2026-09-25
+#   - FIX: length/invalid-codon errors now name the offending sequence
+#     (header) so multi-sequence files can be debugged.
+#   - FIX: parse_fasta_sequences return annotation (it is a generator).
+#   - DOC: --skip-invalid help now states that frequencies are relative to
+#     valid codons only; T and U are counted as distinct bases.
+#   - CLEANUP: removed the dead internal `uppercase` parameter (sequences
+#     are always uppercased before counting, unchanged behavior).
 #########################################################################
 """Calculate codon usage frequencies from nucleotide FASTA files.
 
@@ -17,22 +27,25 @@ import logging
 import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import Iterator, Optional, Tuple
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 VALID_NUCLEOTIDES = {"A", "T", "C", "G", "U"}
 
 
-def parse_fasta_sequences(file_path: str) -> list:
-    """Parse a FASTA file into a list of sequence strings.
+def parse_fasta_sequences(file_path: str) -> Iterator[Tuple[Optional[str], str]]:
+    """Parse a FASTA file into (header, sequence) pairs.
 
     Args:
         file_path: Path to FASTA file.
 
     Yields:
-        Sequence strings.
+        (header, sequence) tuples; header includes the leading '>' and is
+        None for sequences appearing before any header line.
     """
     with open(file_path, "r") as fh:
+        header = None
         seq_parts = []
         for line in fh:
             line = line.strip()
@@ -40,34 +53,33 @@ def parse_fasta_sequences(file_path: str) -> list:
                 continue
             if line.startswith(">"):
                 if seq_parts:
-                    yield "".join(seq_parts)
+                    yield header, "".join(seq_parts)
+                header = line
                 seq_parts = []
             else:
                 seq_parts.append(line)
         if seq_parts:
-            yield "".join(seq_parts)
+            yield header, "".join(seq_parts)
 
 
 def extract_codons(
     seq: str,
+    seq_label: str = "<unnamed>",
     truncate: bool = False,
     skip_invalid: bool = False,
-    uppercase: bool = True,
 ) -> list:
     """Extract valid codons from a nucleotide sequence.
 
     Args:
-        seq: Nucleotide sequence string.
+        seq: Nucleotide sequence string (uppercased internally).
+        seq_label: Sequence header for error messages.
         truncate: If True, truncate to multiple of 3. If False, error on bad length.
         skip_invalid: If True, skip codons with non-standard bases.
-        uppercase: Convert sequence to uppercase.
 
     Returns:
         List of valid 3-letter codon strings.
     """
-    if uppercase:
-        seq = seq.upper()
-
+    seq = seq.upper()
     seq_len = len(seq)
     if seq_len == 0:
         return []
@@ -77,7 +89,10 @@ def extract_codons(
             seq = seq[: seq_len - (seq_len % 3)]
             logging.debug("Truncated sequence from %d to %d bases.", seq_len, len(seq))
         else:
-            logging.error("Sequence length %d is not divisible by 3. Use --truncate to auto-fix.", seq_len)
+            logging.error(
+                "Sequence %s: length %d is not divisible by 3. Use --truncate to auto-fix.",
+                seq_label, seq_len,
+            )
             sys.exit(1)
 
     codons = [seq[i:i + 3] for i in range(0, len(seq), 3)]
@@ -87,7 +102,10 @@ def extract_codons(
         if all(n in VALID_NUCLEOTIDES for n in codon):
             valid_codons.append(codon)
         elif not skip_invalid:
-            logging.error("Invalid codon '%s' found. Use --skip-invalid to skip.", codon)
+            logging.error(
+                "Sequence %s: invalid codon '%s' found. Use --skip-invalid to skip.",
+                seq_label, codon,
+            )
             sys.exit(1)
         else:
             logging.debug("Skipped invalid codon: %s", codon)
@@ -101,7 +119,6 @@ def compute_codon_frequency(
     sort_mode: str = "alpha",
     truncate: bool = False,
     skip_invalid: bool = False,
-    uppercase: bool = True,
 ) -> None:
     """Compute codon frequencies and write TSV output.
 
@@ -111,13 +128,14 @@ def compute_codon_frequency(
         sort_mode: 'alpha' or 'freq'.
         truncate: Truncate non-multiple-of-3 sequences.
         skip_invalid: Skip codons with invalid bases.
-        uppercase: Convert to uppercase.
     """
     codon_counts = defaultdict(int)
     total = 0
 
-    for seq in parse_fasta_sequences(input_path):
-        codons = extract_codons(seq, truncate=truncate, skip_invalid=skip_invalid, uppercase=uppercase)
+    for header, seq in parse_fasta_sequences(input_path):
+        label = header if header else "<unnamed>"
+        codons = extract_codons(seq, seq_label=label, truncate=truncate,
+                                skip_invalid=skip_invalid)
         for codon in codons:
             codon_counts[codon] += 1
         total += len(codons)
@@ -150,6 +168,11 @@ def build_parser() -> argparse.ArgumentParser:
 examples:
   python codon_frequency.py -i cds.fa -o codon_freq.tsv
   python codon_frequency.py -i cds.fa -o codon_freq.tsv --sort freq --truncate
+
+notes:
+  Sequences are uppercased before counting; T and U are counted as distinct
+  bases (no DNA/RNA normalization). With --skip-invalid, frequencies are
+  relative to the number of valid codons only.
 """,
     )
     parser.add_argument("-i", "--input", type=str, required=True, help="Input nucleotide FASTA file.")
@@ -164,7 +187,8 @@ examples:
     )
     parser.add_argument(
         "--skip-invalid", action="store_true",
-        help="Skip codons containing non-standard nucleotides.",
+        help="Skip codons containing non-standard nucleotides "
+             "(frequencies are then relative to valid codons only).",
     )
     parser.add_argument(
         "--log-level", type=str, default="INFO",
