@@ -9,8 +9,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PATTERN="${1:-test_*.py}"
-case "$PATTERN" in
-  *"*"|*"?"*) ;;          # already a glob
-  *) PATTERN="${PATTERN}*.py" ;;
-esac
+if [[ "$PATTERN" != *"*"* && "$PATTERN" != *"?"* ]]; then
+    PATTERN="${PATTERN}*.py"   # bare name -> glob
+fi
 exec python3 -m unittest discover -s tests -p "$PATTERN" -v
