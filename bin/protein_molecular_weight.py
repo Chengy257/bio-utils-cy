@@ -1,4 +1,22 @@
 #!/usr/bin/env python3
+#########################################################################
+# File Name: protein_molecular_weight.py
+# Author: ChengYu
+# Description: Calculate protein molecular weights from FASTA.
+# Created Time: 2026
+#
+# Changelog:
+#   v1.1.0  2026-09-25
+#   - FIX: sequences with no standard residues now report Weight_Da "NA"
+#     (with a warning) instead of a bare water mass of ~18.01 Da.
+#   - FIX: partially invalid sequences warn about the skipped residues.
+#   - FIX: the Sequence column is written verbatim (the old strip(".")
+#     removed literal dots only — a leftover with no consistent meaning).
+#   - DOC: the mass table is monoisotopic (the old header said "Average
+#     isotopic"); note that peptide_properties.py reports average masses,
+#     so the two tools intentionally differ.
+#   - CLEANUP: removed unused TextIO import.
+#########################################################################
 """
 Calculate protein molecular weights from FASTA.
 
@@ -6,20 +24,20 @@ Author: ChengYu
 Created Time: 2026
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import argparse
 import csv
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, TextIO
+from typing import Dict, List, Optional
 
 from Bio import SeqIO
 
 logger = logging.getLogger(__name__)
 
-# Average isotopic masses of amino-acid residues (monoisotopic, Da)
+# Monoisotopic masses of amino-acid residues (Da)
 AA_MASS: Dict[str, float] = {
     "A": 71.03711, "C": 103.00919, "D": 115.02694, "E": 129.04259,
     "F": 147.06841, "G": 57.02146,  "H": 137.05891, "I": 113.08406,
@@ -85,14 +103,23 @@ def process_fasta(
     for rec in records:
         seq = str(rec.seq).upper()
         valid_len = sum(1 for aa in seq if aa in AA_MASS)
-        mw = calculate_weight(seq)
+        skipped = len(seq) - valid_len
+        if skipped:
+            logger.warning("%s: %d non-standard residue(s) skipped", rec.id, skipped)
+        if valid_len == 0:
+            logger.warning("%s: no standard residues; weight reported as NA", rec.id)
+            mw_str = kda_str = "NA"
+        else:
+            mw = calculate_weight(seq)
+            mw_str = f"{mw:.2f}"
+            kda_str = f"{mw / 1000:.2f}"
         rows.append({
             "ID": rec.id,
-            "Weight_Da": f"{mw:.2f}",
-            "Weight_kDa": f"{mw / 1000:.2f}",
+            "Weight_Da": mw_str,
+            "Weight_kDa": kda_str,
             "Length": str(valid_len),
             "First_AA": seq[0] if seq else "",
-            "Sequence": seq.strip("."),
+            "Sequence": seq,
         })
 
     if output_path:
