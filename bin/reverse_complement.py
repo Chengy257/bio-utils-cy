@@ -5,6 +5,16 @@
 # Description: Compute reverse complement, complement, or reverse of
 #              nucleotide sequences from FASTA files or command-line input.
 # Created Time: 2026
+#
+# Changelog:
+#   v1.1.0  2026-09-25
+#   - FIX: U (RNA) and alignment gaps (- .) no longer crash with a KeyError;
+#     they are complemented (U->A, gaps preserved) as the input validation
+#     always claimed they were supported.
+#   - FIX: any other non-nucleotide character now fails with a clean error
+#     message and exit code 1 instead of a raw KeyError traceback.
+#   - FIX: FASTA description fields are preserved in the output (previously
+#     only the first token of the header was kept).
 #########################################################################
 """Compute reverse complement, complement, or reverse of nucleotide sequences.
 
@@ -18,11 +28,13 @@ import sys
 from pathlib import Path
 from typing import Dict
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 COMPLEMENT_MAP: Dict[str, str] = {
     "A": "T", "T": "A", "G": "C", "C": "G", "N": "N",
     "a": "t", "t": "a", "g": "c", "c": "g", "n": "n",
+    "U": "A", "u": "a",          # RNA
+    "-": "-", ".": ".",          # alignment gaps
 }
 
 VALID_MODES = ("revcomp", "comp", "rev")
@@ -64,7 +76,7 @@ def parse_fasta(file_path: str) -> list:
             if line.startswith(">"):
                 if header is not None:
                     records.append((header, "".join(seq_parts)))
-                header = line.split()[0]
+                header = line  # keep the full header incl. description
                 seq_parts = []
             else:
                 seq_parts.append(line)
@@ -75,12 +87,9 @@ def parse_fasta(file_path: str) -> list:
     return records
 
 
-def validate_sequence(seq: str) -> None:
-    """Check that all bases are valid nucleotides."""
-    valid = set(COMPLEMENT_MAP.keys()) | {"U", "u", "-", "."}
-    invalid = set(seq) - valid
-    if invalid:
-        logging.warning("Non-standard bases found: %s", invalid)
+def invalid_bases(seq: str) -> set:
+    """Return the set of characters that cannot be complemented."""
+    return set(seq) - set(COMPLEMENT_MAP.keys())
 
 
 def process_fasta_file(file_path: str, mode: str, output: str = None) -> None:
@@ -92,7 +101,13 @@ def process_fasta_file(file_path: str, mode: str, output: str = None) -> None:
     out_fh = open(output, "w") if output else sys.stdout
     try:
         for header, seq in records:
-            validate_sequence(seq)
+            bad = invalid_bases(seq)
+            if bad:
+                logging.error(
+                    "%s: sequence %s contains non-nucleotide characters: %s",
+                    file_path, header.split()[0][1:], ", ".join(sorted(bad)),
+                )
+                sys.exit(1)
             result = func(seq)
             out_fh.write(f"{header}\n{result}\n")
     finally:
@@ -104,7 +119,11 @@ def process_fasta_file(file_path: str, mode: str, output: str = None) -> None:
 
 def process_string(seq: str, mode: str) -> None:
     """Process a single sequence string and print the result."""
-    validate_sequence(seq)
+    bad = invalid_bases(seq)
+    if bad:
+        logging.error("Sequence contains non-nucleotide characters: %s",
+                      ", ".join(sorted(bad)))
+        sys.exit(1)
     func = MODE_FUNCS[mode]
     print(func(seq))
 
