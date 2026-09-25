@@ -1,4 +1,22 @@
 #!/usr/bin/env python3
+#########################################################################
+# File Name: format_sra_summary.py
+# Author: ChengYu
+# Description: Format comprehensive SRA metadata into a standardized
+#              summary TSV with four-layer SeqType classification, field
+#              mapping, text cleaning, and synonym resolution.
+# Created Time: 2026
+#
+# Changelog:
+#   v1.1.0  2026-09-25
+#   - FIX: rows with more fields than the header no longer crash the
+#     writer with a None-key sort TypeError; extra fields are dropped
+#     with a warning (rows with fewer fields keep their empty cells).
+#   - CLEANUP: removed duplicate "experiment_title" key in FIELD_MAP.
+#   - DOC: classification fallbacks documented in the epilog (unknown
+#     strategy with GENOMIC source classifies as WGS; layers fall back
+#     to "Other" when nothing matches).
+#########################################################################
 """
 File Name: format_sra_summary.py
 Author: ChengYu
@@ -152,7 +170,6 @@ FIELD_MAP: Dict[str, str] = {
     "LoadDate": "LoadDate",
     "load_date": "LoadDate",
     "ExperimentTitle": "ExperimentTitle",
-    "experiment_title": "ExperimentTitle",
     "experiment_title": "ExperimentTitle",
     "StudyTitle": "StudyTitle",
     "study_title": "StudyTitle",
@@ -480,6 +497,11 @@ examples:
   %(prog)s --input metadata.tsv --output summary.tsv --seq-type-override RNA-Seq
   %(prog)s --input metadata.tsv --output summary.tsv --quiet
   %(prog)s --input metadata.tsv --output - --log-level DEBUG
+
+notes:
+  SeqType classification order: LibraryStrategy > LibrarySource >
+  instrument (long-read) > title keywords > "Other". An unrecognized
+  strategy with a GENOMIC source classifies as WGS.
 """,
     )
     parser.add_argument(
@@ -517,10 +539,21 @@ examples:
 
     # Read input TSV
     rows: List[Dict[str, str]] = []
+    n_ragged = 0
     with open(in_path, "r", encoding="utf-8") as fh:
         reader = csv.DictReader(fh, delimiter="\t")
         for row in reader:
+            if None in row:
+                # more fields than the header: None-keyed extras would
+                # crash the writer later; drop them
+                n_ragged += 1
+                row.pop(None)
             rows.append(dict(row))
+    if n_ragged:
+        logger.warning(
+            "%d row(s) had more fields than the header; extra fields dropped",
+            n_ragged,
+        )
     logger.info("Read %d rows from %s", len(rows), args.input)
 
     if not rows:
