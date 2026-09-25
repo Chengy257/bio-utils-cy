@@ -5,6 +5,18 @@
 # Description: Calculate tissue specificity index (tau) for genes
 #              from an expression matrix.
 # Created Time: 2026
+#
+# Changelog:
+#   v1.1.0  2026-09-25
+#   - FIX: headerless input no longer produces a bogus "0  tau" header
+#     line in the output.
+#   - FIX: gene IDs are written as-is (strings); purely numeric IDs no
+#     longer depend on pandas type inference.
+#   - FIX: negative expression values fail with a clean error (tau is
+#     undefined); rows containing NaN are counted and warned about
+#     instead of being silently lumped into the all-zero statistic.
+#   - PERF: tau is computed vectorized over the whole matrix instead of
+#     one apply() call per gene.
 #########################################################################
 """Calculate tissue specificity index (tau) for genes.
 
@@ -21,26 +33,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-__version__ = "1.0.0"
-
-
-def calc_tau(values: np.ndarray) -> float:
-    """Calculate tissue specificity tau for a single gene.
-
-    Args:
-        values: Array of expression values across tissues.
-
-    Returns:
-        Tau value (0-1), or NaN if all values are zero.
-    """
-    values = np.array(values, dtype=float)
-    max_expr = np.max(values)
-    if max_expr == 0:
-        return np.nan
-    n = len(values)
-    if n <= 1:
-        return np.nan
-    return np.sum(1 - (values / max_expr)) / (n - 1)
+__version__ = "1.1.0"
 
 
 def compute_tau(input_path: str, output_path: str, has_header: bool = False) -> None:
@@ -54,7 +47,8 @@ def compute_tau(input_path: str, output_path: str, has_header: bool = False) -> 
     header = 0 if has_header else None
     df = pd.read_csv(input_path, sep="\t", header=header)
 
-    # First column is gene ID
+    # First column is gene ID; keep it verbatim (as strings)
+    df.iloc[:, 0] = df.iloc[:, 0].astype(str)
     gene_col = df.columns[0]
     expr_cols = df.columns[1:]
 
@@ -62,14 +56,38 @@ def compute_tau(input_path: str, output_path: str, has_header: bool = False) -> 
         logging.error("No expression columns found (need at least 2 columns).")
         sys.exit(1)
 
-    logging.info("Computing tau for %d genes across %d tissues.", len(df), len(expr_cols))
+    values = df[expr_cols].to_numpy(dtype=float)
+    n_tissues = values.shape[1]
 
-    df["tau"] = df[expr_cols].apply(calc_tau, axis=1)
-    result = df[[gene_col, "tau"]]
-    result.to_csv(output_path, sep="\t", index=False)
+    n_negative = int((values < 0).sum())
+    if n_negative:
+        logging.error(
+            "Found %d negative expression value(s); tau is undefined for negative values.",
+            n_negative,
+        )
+        sys.exit(1)
 
-    valid = result["tau"].notna().sum()
-    logging.info("Results: %d genes (%d valid, %d all-zero) -> %s", len(result), valid, len(result) - valid, output_path)
+    n_nan_rows = int(np.isnan(values).any(axis=1).sum())
+    if n_nan_rows:
+        logging.warning("%d gene(s) contain missing values; their tau is NA.", n_nan_rows)
+
+    logging.info("Computing tau for %d genes across %d tissues.", len(df), n_tissues)
+
+    # tau = sum(1 - x/x_max) / (n - 1); all-zero rows -> NaN
+    max_expr = np.nanmax(values, axis=1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        denom = np.where(max_expr > 0, max_expr, np.nan)
+        tau = (n_tissues - values.sum(axis=1) / denom) / (n_tissues - 1)
+    tau[values.shape[1] <= 1] = np.nan
+
+    result = pd.DataFrame({gene_col: df.iloc[:, 0], "tau": tau})
+    result.to_csv(output_path, sep="\t", index=False, header=has_header)
+
+    valid = int(np.isfinite(tau).sum())
+    logging.info(
+        "Results: %d genes (%d valid, %d all-zero/NA) -> %s",
+        len(result), valid, len(result) - valid, output_path,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -90,7 +108,7 @@ examples:
     parser.add_argument("-o", "--output", type=str, required=True, help="Output TSV with gene ID and tau.")
     parser.add_argument(
         "--header", action="store_true",
-        help="Input file has a header row.",
+        help="Input file has a header row (output then carries the same header).",
     )
     parser.add_argument(
         "--log-level", type=str, default="INFO",
