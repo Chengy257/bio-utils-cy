@@ -1,4 +1,23 @@
 #!/usr/bin/env python3
+#########################################################################
+# File Name: dssp_summary.py
+# Author: ChengYu
+# Description: Batch analyze DSSP output files and summarize secondary
+#              structure statistics.
+# Created Time: 2026
+#
+# Changelog:
+#   v1.1.0  2026-09-25
+#   - FIX: Raw_space_Count was always 0 (the structure column was stripped
+#     before counting, then looked up with a literal space); the raw
+#     character is now counted unmodified.
+#   - FIX: residues whose amino acid has no ASA reference value (X, MSE,
+#     ...) are no longer dropped from every statistic; they count towards
+#     the structure ratios and are only skipped for the ASA average.
+#   - FIX: the MAX_ASA comment claimed Tien et al. 2013 while the values
+#     are the Sander & Rost (1994) reference ASA table; comment corrected
+#     (values unchanged).
+#########################################################################
 """
 Batch analyze DSSP output files and summarize secondary structure statistics.
 
@@ -6,7 +25,7 @@ Author: ChengYu
 Created Time: 2026
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import argparse
 import logging
@@ -20,7 +39,7 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# Maximum accessible surface area reference (Tien et al. 2013)
+# Maximum accessible surface area reference (Sander & Rost, 1994)
 MAX_ASA: Dict[str, float] = {
     "A": 106.0, "R": 248.0, "N": 157.0, "D": 163.0, "C": 135.0,
     "Q": 198.0, "E": 194.0, "G": 84.0,  "H": 184.0, "I": 169.0,
@@ -75,27 +94,25 @@ def parse_dssp_file(filepath: str) -> Optional[Dict[str, Any]]:
             continue
 
         aa = line[13].strip()
-        struct = line[16].strip()
+        struct_raw = line[16]
         acc_str = line[34:38].strip()
 
         if not aa or aa == "!":
             continue
 
+        raw_counter[struct_raw] += 1
+        struct_class = STRUCTURE_MAP.get(struct_raw.strip(), "Coil")
+        structure_counts[struct_class] += 1
+        total_residues += 1
+
         max_asa = MAX_ASA.get(aa.upper())
         if max_asa is None:
             continue
-
         try:
             acc = float(acc_str)
-            relative_asa = acc / max_asa
-            relative_asa_list.append(relative_asa)
+            relative_asa_list.append(acc / max_asa)
         except ValueError:
             continue
-
-        raw_counter[struct] += 1
-        struct_class = STRUCTURE_MAP.get(struct, "Coil")
-        structure_counts[struct_class] += 1
-        total_residues += 1
 
     if total_residues == 0:
         logger.warning("No residues parsed in: %s", filepath)
