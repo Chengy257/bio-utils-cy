@@ -5,12 +5,31 @@
 # Description: Analyze aligned FASTA files for direct pairwise
 #              similarity metrics (match count, identity) without BLAST.
 # Created Time: 2026
+#
+# Changelog:
+#   v1.1.0  2026-09-26
+#   - FIX: unequal-length records were silently truncated to the
+#     shorter one and compared anyway; an aligned file with ragged
+#     lengths is malformed — the pair is now skipped with a warning.
+#   - FIX: the reference record was skipped by ID equality, so a
+#     second record sharing the reference's ID was skipped too; the
+#     comparison now skips exactly the chosen reference record.
+#   - DOC: the similarity denominator excludes columns where either
+#     sequence has a gap (pairwise deletion), and matches across
+#     double-gap columns are impossible by construction. Both are now
+#     stated in the docstring and --help.
+#   - --threads defaults to BUC_THREADS (config/env.sh) when set and is
+#     validated.
 #########################################################################
 """Analyze aligned FASTA files for pairwise similarity without BLAST.
 
 For each multi-species aligned FASTA file, computes match count, total
 positions, and similarity percentage between a reference and all other
 species by direct character comparison (no external tools needed).
+
+Semantics: columns where either sequence has a gap are excluded from
+the denominator (pairwise deletion), so similarity is
+matches / (columns with bases in both sequences).
 """
 
 import argparse
@@ -24,7 +43,7 @@ import pandas as pd
 from Bio import SeqIO
 from Bio.Seq import Seq
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 
 def validate_fasta(file_path: str) -> bool:
@@ -44,7 +63,7 @@ def validate_fasta(file_path: str) -> bool:
         return False
 
 
-def clean_aligned_pair(ref_seq: Seq, target_seq: Seq) -> tuple:
+def clean_aligned_pair(ref_seq: Seq, target_seq: Seq):
     """Remove double-gap columns from an aligned pair.
 
     Positions where both sequences have a gap are excluded.
@@ -54,13 +73,15 @@ def clean_aligned_pair(ref_seq: Seq, target_seq: Seq) -> tuple:
         target_seq: Target aligned sequence.
 
     Returns:
-        Tuple of (cleaned_ref, cleaned_target) as Seq objects.
+        Tuple of (cleaned_ref, cleaned_target) as Seq objects, or None
+        when the records are not the same length (malformed alignment).
     """
     if len(ref_seq) != len(target_seq):
-        logging.warning("Sequence length mismatch (%d vs %d).", len(ref_seq), len(target_seq))
-        min_len = min(len(ref_seq), len(target_seq))
-        ref_seq = ref_seq[:min_len]
-        target_seq = target_seq[:min_len]
+        logging.warning(
+            "Sequence length mismatch (%d vs %d); skipping pair (malformed alignment?).",
+            len(ref_seq), len(target_seq),
+        )
+        return None
 
     ref_clean = []
     target_clean = []
@@ -139,10 +160,13 @@ def process_file(file_path: str, reference_species: str) -> list:
 
     results = []
     for rec in records:
-        if rec.id == ref_record.id:
+        if rec is ref_record:
             continue
 
-        clean_ref, clean_target = clean_aligned_pair(ref_record.seq, rec.seq)
+        cleaned = clean_aligned_pair(ref_record.seq, rec.seq)
+        if cleaned is None:
+            continue
+        clean_ref, clean_target = cleaned
         metrics = calculate_similarity(clean_ref, clean_target)
 
         results.append({
@@ -231,8 +255,9 @@ examples:
         help="Output CSV file path.",
     )
     parser.add_argument(
-        "-t", "--threads", type=int, default=4,
-        help="Number of parallel threads (default: 4).",
+        "-t", "--threads", type=int,
+        default=int(os.environ.get("BUC_THREADS", "4") or 4),
+        help="Number of parallel threads (default: BUC_THREADS or 4).",
     )
     parser.add_argument(
         "--suffix", type=str, default=".aligned.fa",
@@ -263,6 +288,9 @@ def main() -> None:
     if not input_dir.is_dir():
         logging.error("Input directory not found: %s", args.input)
         sys.exit(1)
+
+    if args.threads < 1:
+        parser.error("--threads must be >= 1")
 
     analyze_directory(
         input_dir=str(input_dir),
