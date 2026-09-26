@@ -5,12 +5,36 @@
 # Description: Build and visualize sequence similarity networks using
 #              k-mer Jaccard similarity and Louvain community detection.
 # Created Time: 2026
+#
+# Changelog:
+#   v1.1.0  2026-09-26
+#   - FIX: fatal NameError — main() imported numpy/networkx/matplotlib/
+#     community_louvain/etc. as main-local names while every helper
+#     referenced them globally, so the first similarity computation
+#     crashed (previously masked by the missing-dependency exit).
+#     Imports now live at module level; missing packages produce one
+#     clean error and exit 1 (--help/--version stay working).
+#   - FIX: cm.get_cmap was removed in matplotlib 3.9 and raised
+#     AttributeError during visualization; the colormaps registry is
+#     used instead.
+#   - FIX: a missing python-louvain now aborts with a clear message
+#     before outputs are written, instead of an ImportError traceback.
+#   - DOC: the similarity is a binary Jaccard over k-mer presence/
+#     absence (scipy semantics); k-mer counts are not weighted. This is
+#     now stated in the module docstring and --help.
+#   - Removed the duplicate matplotlib.use("Agg") and the duplicate
+#     "import sys" in the dependency-check except block.
 #########################################################################
 """Build and visualize sequence similarity networks from FASTA files.
 
 Uses k-mer based Jaccard similarity to construct a sparse similarity
 matrix, then applies Louvain community detection for clustering. Outputs
 a publication-quality network PDF and SIF format network file.
+
+The similarity is a *binary* Jaccard coefficient over k-mer presence/
+absence: a k-mer counts as shared regardless of how often it occurs
+(scipy's jaccard metric on the count profiles). Sequences sharing no
+k-mer get similarity 0.
 
 Requires: networkx, python-louvain, scikit-learn, scipy, biopython, matplotlib
 """
@@ -21,24 +45,28 @@ import sys
 from pathlib import Path
 from typing import List, Tuple
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
+
+try:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import networkx as nx
+    import numpy as np
+    from Bio import SeqIO
+    from scipy.sparse import csr_matrix
+    from scipy.spatial.distance import pdist, squareform
+    from sklearn.feature_extraction.text import CountVectorizer
+
+    _IMPORT_ERROR = None
+except ImportError as _e:  # pragma: no cover - exercised via subprocess
+    _IMPORT_ERROR = str(_e.name)
 
 
-def _check_dependencies() -> None:
-    """Import and validate all required dependencies."""
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import community.community_louvain  # noqa: F401
-        import networkx  # noqa: F401
-        import numpy  # noqa: F401
-        import scipy  # noqa: F401
-        import sklearn  # noqa: F401
-    except ImportError as e:
-        import sys
-        print(f"ERROR: Missing dependency: {e.name}", file=sys.stderr)
-        print("Install with: pip install networkx python-louvain scikit-learn scipy biopython matplotlib", file=sys.stderr)
-        sys.exit(1)
+def _missing_dep_exit(name: str, pip_hint: str) -> None:
+    logging.error("Missing dependency: %s. Install with: pip install %s", name, pip_hint)
+    sys.exit(1)
 
 
 def get_kmers(sequence: str, k: int) -> List[str]:
@@ -58,8 +86,10 @@ def compute_similarity_matrix(
     sequences: List[str],
     k: int = 5,
     threshold: float = 0.5,
-) -> "csr_matrix":
+):
     """Compute sparse Jaccard similarity matrix from k-mer profiles.
+
+    The Jaccard coefficient is computed on k-mer presence/absence.
 
     Args:
         sequences: List of sequence strings.
@@ -67,7 +97,7 @@ def compute_similarity_matrix(
         threshold: Minimum similarity to retain (values below are zeroed).
 
     Returns:
-        Sparse similarity matrix.
+        Sparse similarity matrix (scipy csr_matrix).
     """
     if len(sequences) < 2:
         logging.error("Need at least 2 sequences for network construction.")
@@ -78,7 +108,6 @@ def compute_similarity_matrix(
 
     jaccard_dist = pdist(kmer_matrix.toarray(), metric="jaccard")
     sim_matrix = squareform(1 - jaccard_dist)
-    np.fill_diagonal(sim_matrix, 0)
 
     sim_matrix[sim_matrix < threshold] = 0
     sparse_matrix = csr_matrix(sim_matrix)
@@ -91,7 +120,7 @@ def compute_similarity_matrix(
     return sparse_matrix
 
 
-def build_network(similarity_matrix: "csr_matrix", threshold: float) -> "nx.Graph":
+def build_network(similarity_matrix, threshold: float) -> "nx.Graph":
     """Build a networkx graph from a sparse similarity matrix.
 
     Args:
@@ -106,7 +135,7 @@ def build_network(similarity_matrix: "csr_matrix", threshold: float) -> "nx.Grap
 
     for i, j, weight in zip(coo.row, coo.col, coo.data):
         if weight >= threshold and i != j:
-            G.add_edge(i, j, weight=float(weight))
+            G.add_edge(int(i), int(j), weight=float(weight))
 
     logging.info("Network: %d nodes, %d edges.", G.number_of_nodes(), G.number_of_edges())
 
@@ -127,6 +156,10 @@ def detect_communities(G: "nx.Graph") -> dict:
     """
     if G.number_of_nodes() == 0:
         return {}
+    try:
+        import community.community_louvain as community_louvain
+    except ImportError:
+        _missing_dep_exit("community (python-louvain)", "python-louvain")
     partition = community_louvain.best_partition(G, weight="weight")
     n_communities = len(set(partition.values()))
     logging.info("Detected %d communities.", n_communities)
@@ -142,7 +175,7 @@ def save_sif(G: "nx.Graph", seq_ids: List[str], output_path: str) -> None:
         output_path: Output SIF file path.
     """
     with open(output_path, "w") as fh:
-        for i, j, data in G.edges(data=True):
+        for i, j, _data in G.edges(data=True):
             fh.write(f"{seq_ids[i]}\tsimilarity\t{seq_ids[j]}\n")
     logging.info("SIF network saved to %s", output_path)
 
@@ -169,9 +202,9 @@ def visualize_network(
         logging.warning("Empty network, skipping visualization.")
         return
 
-    n_communities = len(set(partition.values()))
-    cmap = cm.get_cmap("tab20", max(n_communities, 1))
-    node_colors = [cmap(partition.get(n, 0) / max(n_communities, 1)) for n in G.nodes()]
+    n_communities = max(len(set(partition.values())), 1)
+    cmap = plt.colormaps["tab20"].resampled(n_communities)
+    node_colors = [cmap(partition.get(n, 0) / n_communities) for n in G.nodes()]
 
     pos = nx.spring_layout(G, k=0.3, iterations=150, seed=42)
 
@@ -187,14 +220,14 @@ def visualize_network(
     for node, comm in partition.items():
         if comm not in community_first:
             community_first[comm] = node
-    labels = {n: seq_ids[n] for n in community_first.values()}
+    labels = {n: seq_ids[n] for n in community_first.values() if n in G.nodes()}
     nx.draw_networkx_labels(G, pos, labels=labels, font_size=8, font_weight="bold")
 
     # Legend
     handles = [
         plt.Line2D([0], [0], marker="o", color="w",
-                   label=f"Community {i+1}",
-                   markerfacecolor=cmap(i / max(n_communities, 1)),
+                   label=f"Community {i + 1}",
+                   markerfacecolor=cmap(i / n_communities),
                    markersize=10)
         for i in range(n_communities)
     ]
@@ -219,6 +252,11 @@ def build_parser() -> argparse.ArgumentParser:
 examples:
   python sequence_similarity_network.py -i proteins.fa -o result -t 0.5 -k 5
   python sequence_similarity_network.py -i proteins.fa -o result -t 0.3 -k 3
+
+notes:
+  Similarity is a binary Jaccard coefficient over k-mer presence/absence
+  (k-mer counts are not weighted). Requires python-louvain for the
+  community-detection step.
 """,
     )
     parser.add_argument(
@@ -258,19 +296,16 @@ def main() -> None:
         level=getattr(logging, args.log_level),
     )
 
-    _check_dependencies()
+    if _IMPORT_ERROR is not None:
+        _missing_dep_exit(
+            _IMPORT_ERROR,
+            "networkx python-louvain scikit-learn scipy biopython matplotlib",
+        )
 
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.cm as cm
-    import matplotlib.pyplot as plt
-    import community.community_louvain as community_louvain
-    import networkx as nx
-    import numpy as np
-    from Bio import SeqIO
-    from scipy.sparse import csr_matrix
-    from scipy.spatial.distance import pdist, squareform
-    from sklearn.feature_extraction.text import CountVectorizer
+    if not 0 <= args.threshold <= 1:
+        parser.error("--threshold must be in [0, 1]")
+    if args.kmer_size < 1:
+        parser.error("--kmer-size must be >= 1")
 
     input_path = Path(args.input)
     if not input_path.is_file():
