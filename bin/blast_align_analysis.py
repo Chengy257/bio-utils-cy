@@ -5,12 +5,35 @@
 # Description: Analyze DNA FASTA files using BLAST for pairwise
 #              similarity metrics between species (nucleotide + protein).
 # Created Time: 2026
+#
+# Changelog:
+#   v1.1.0  2026-09-26
+#   - FIX: protein queries passed to blastp kept their terminal stop
+#     codon as '*'; translation now stops at the first stop codon
+#     (to_stop=True).
+#   - NEW: --task option (blastn-short default, preserving previous
+#     behaviour) so long sequences can use the blastn/megablast tasks;
+#     blastn-short is tuned for very short queries and changes e-value
+#     semantics for longer ones (documented in --help).
+#   - DOC: only the first HSP of the top alignment is reported, and
+#     nucleotide identity uses the BLAST alignment length (including
+#     gap columns) as denominator — the same convention as outfmt6
+#     pident. Both are now stated in the docstring and --help.
+#   - --threads defaults to BUC_THREADS (config/env.sh) when set and is
+#     validated.
 #########################################################################
 """Analyze DNA FASTA files using BLAST for inter-species similarity.
 
 For each multi-species FASTA file, uses BLAST to compute nucleotide and
 protein similarity between a reference species and all others. Outputs
 a CSV with e-values, bit scores, and identity percentages.
+
+Per pair, only the first HSP of the top BLAST alignment is reported.
+Nucleotide identity uses the alignment length (gap columns included) as
+denominator, matching BLAST outfmt6 pident. The default nucleotide task
+is blastn-short (tuned for very short queries); for CDS-sized or longer
+sequences pass --task blastn (or megablast) — e-value scales differ
+between tasks.
 
 Requires: blastn, blastp (NCBI BLAST+)
 """
@@ -30,7 +53,14 @@ from Bio import SeqIO
 from Bio.Blast import NCBIXML
 from Bio.Seq import Seq
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
+
+VALID_BLASTN_TASKS = ("blastn", "blastn-short", "megablast", "dc-megablast")
+
+# blastn-short is kept as the default for backwards compatibility; it is
+# only appropriate for very short queries (<~30 bp).
+
+BLASTP_PARAMS = ["-matrix", "PAM30", "-seg", "no", "-gapopen", "9", "-gapextend", "1"]
 
 
 def resolve_tool(name: str) -> str:
@@ -46,11 +76,6 @@ def resolve_tool(name: str) -> str:
             f"{name} not found in PATH; set BUC_{name.upper()}_BIN in config/env.local.sh"
         )
     return found
-
-
-# BLAST parameters optimized for short sequences
-BLASTN_PARAMS = ["-task", "blastn-short", "-dust", "no", "-gapopen", "4", "-gapextend", "2"]
-BLASTP_PARAMS = ["-matrix", "PAM30", "-seg", "no", "-gapopen", "9", "-gapextend", "1"]
 
 
 def validate_fasta(file_path: str) -> bool:
@@ -99,6 +124,7 @@ def run_blast(
     query_seq: Seq,
     target_seq: Seq,
     is_protein: bool = False,
+    blast_task: str = "blastn-short",
 ) -> dict:
     """Run BLAST between two sequences and return similarity metrics.
 
@@ -106,6 +132,7 @@ def run_blast(
         query_seq: Query sequence.
         target_seq: Target/subject sequence.
         is_protein: Whether to use blastp instead of blastn.
+        blast_task: blastn task (ignored for blastp).
 
     Returns:
         Dict with 'e-value', 'bit_score', 'identity' keys (None on failure).
@@ -125,7 +152,16 @@ def run_blast(
         target_file.close()
 
         program = resolve_tool("blastp" if is_protein else "blastn")
-        extra_params = BLASTP_PARAMS if is_protein else BLASTN_PARAMS
+        if is_protein:
+            extra_params = BLASTP_PARAMS
+        else:
+            # Dust filtering stays off for every task: this tool compares
+            # orthologous (often GC-rich) sequences, and DUST can mask
+            # those almost completely.
+            extra_params = ["-task", blast_task, "-dust", "no"]
+            if blast_task == "blastn-short":
+                # short-query tuning (legacy default): lenient gaps
+                extra_params += ["-gapopen", "4", "-gapextend", "2"]
 
         cmd = [
             program,
@@ -163,7 +199,7 @@ def extract_species(record_id: str) -> str:
     return record_id.split(".")[0]
 
 
-def process_file(file_path: str, reference_species: str) -> list:
+def process_file(file_path: str, reference_species: str, blast_task: str = "blastn-short") -> list:
     """Process a single multi-species FASTA file.
 
     Args:
@@ -203,8 +239,8 @@ def process_file(file_path: str, reference_species: str) -> list:
             logging.debug("Target sequence too short: %s in %s", record.id, file_path)
             continue
 
-        nuc_blast = run_blast(ref_seq, target_seq, is_protein=False)
-        prot_blast = run_blast(ref_seq.translate(), target_seq.translate(), is_protein=True)
+        nuc_blast = run_blast(ref_seq, target_seq, is_protein=False, blast_task=blast_task)
+        prot_blast = run_blast(ref_seq.translate(to_stop=True), target_seq.translate(to_stop=True), is_protein=True)
 
         results.append({
             "file": os.path.basename(file_path),
@@ -225,6 +261,7 @@ def analyze_directory(
     output_file: str,
     threads: int = 4,
     suffix: str = ".dna.fa",
+    blast_task: str = "blastn-short",
 ) -> None:
     """Analyze all matching FASTA files in a directory.
 
@@ -234,6 +271,7 @@ def analyze_directory(
         output_file: Output CSV path.
         threads: Number of parallel workers.
         suffix: File suffix to match (default: .dna.fa).
+        blast_task: blastn task for nucleotide comparisons.
     """
     files = sorted(
         os.path.join(input_dir, f)
@@ -250,7 +288,7 @@ def analyze_directory(
     results = []
     with ThreadPoolExecutor(max_workers=threads) as executor:
         future_map = {
-            executor.submit(process_file, fp, reference_species): fp
+            executor.submit(process_file, fp, reference_species, blast_task): fp
             for fp in files
         }
         for future in as_completed(future_map):
@@ -295,8 +333,16 @@ examples:
         help="Output CSV file path.",
     )
     parser.add_argument(
-        "-t", "--threads", type=int, default=4,
-        help="Number of parallel threads (default: 4).",
+        "-t", "--threads", type=int,
+        default=int(os.environ.get("BUC_THREADS", "4") or 4),
+        help="Number of parallel threads (default: BUC_THREADS or 4).",
+    )
+    parser.add_argument(
+        "--task", type=str, default="blastn-short", choices=VALID_BLASTN_TASKS,
+        help="blastn task for nucleotide comparisons (default: blastn-short, "
+             "the previous behaviour; tuned for very short queries). Use "
+             "'blastn' or 'megablast' for CDS-sized or longer sequences — "
+             "e-value scales differ between tasks.",
     )
     parser.add_argument(
         "--suffix", type=str, default=".dna.fa",
@@ -328,6 +374,9 @@ def main() -> None:
         logging.error("Input directory not found: %s", args.input)
         sys.exit(1)
 
+    if args.threads < 1:
+        parser.error("--threads must be >= 1")
+
     # Check BLAST+ availability (and resolve configured binaries)
     try:
         resolve_tool("blastn")
@@ -343,6 +392,7 @@ def main() -> None:
         output_file=args.output,
         threads=args.threads,
         suffix=args.suffix,
+        blast_task=args.task,
     )
 
 
