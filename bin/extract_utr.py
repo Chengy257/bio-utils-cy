@@ -5,12 +5,35 @@
 # Description: Extract 5' and 3' UTR sequences from GTF annotations
 #              and a genome FASTA file.
 # Created Time: 2026
+#
+# Changelog:
+#   v1.1.0  2026-09-26
+#   - FIX: negative-strand UTRs are now reverse-complemented; output
+#     sequences always match the transcript strand (previously the
+#     forward genomic slice was written, i.e. the wrong strand).
+#   - FIX: multi-exon UTR fragments are joined in transcript order
+#     (5'->3') into a single FASTA record per transcript/UTR type,
+#     eliminating duplicate FASTA IDs for spliced UTRs.
+#   - FIX: genome FASTA is now lazy-indexed (SeqIO.index) instead of
+#     fully loaded into memory.
+#   - FIX: malformed GTF lines (non-integer coordinates, unknown strand)
+#     are skipped with a warning instead of raising a traceback.
+#   - FIX: transcript_id attribute parsing handles unquoted values and
+#     no longer mismatches keys like transcript_id_version.
+#   - Transcripts with CDS/exon records on different chromosomes or
+#     mixed strands are skipped with a warning.
 #########################################################################
 """Extract 5' and 3' UTR sequences from GTF annotations.
 
 Parses GTF to identify UTR regions (exon portions outside CDS),
 extracts sequences from the genome FASTA, and outputs both a FASTA
 file with UTR sequences and a CSV with UTR lengths.
+
+UTR fragments spanning multiple exons are joined in transcript order
+(5'->3') into a single FASTA record named {transcript_id}_{5UTR|3UTR};
+negative-strand sequences are reverse-complemented so output always
+matches the transcript strand. Transcripts without CDS records
+(non-coding) are skipped.
 
 Requires: biopython
 """
@@ -21,8 +44,28 @@ import logging
 import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import Optional
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
+
+
+def _gtf_attr(attributes: str, key: str) -> Optional[str]:
+    """Return the value of a GTF attribute, or None if absent.
+
+    Handles both 'key "value";' and 'key=value;' spellings; the key must
+    match exactly (transcript_id does not match transcript_id_version).
+    """
+    for attr in attributes.strip().split(";"):
+        attr = attr.strip()
+        if not attr:
+            continue
+        if " " in attr:
+            k, _, v = attr.partition(" ")
+        else:
+            k, _, v = attr.partition("=")
+        if k == key:
+            return v.strip().strip('"')
+    return None
 
 
 def parse_gtf(gtf_file: str) -> dict:
@@ -32,33 +75,31 @@ def parse_gtf(gtf_file: str) -> dict:
         gtf_file: Path to GTF annotation file.
 
     Returns:
-        Dict mapping transcript_id -> {'exons': [...], 'cds': [...]}.
+        Dict mapping transcript_id -> {'exons': [...], 'cds': [...]},
+        each record a (chrom, start, end, strand) tuple.
     """
     transcripts = defaultdict(lambda: {"exons": [], "cds": []})
+    n_malformed = 0
 
     with open(gtf_file, "r") as fh:
         for line in fh:
-            if line.startswith("#"):
+            if line.startswith("#") or not line.strip():
                 continue
-            fields = line.strip().split("\t")
+            fields = line.rstrip("\n").split("\t")
             if len(fields) < 9:
+                n_malformed += 1
+                continue
+            try:
+                start, end = int(fields[3]), int(fields[4])
+            except ValueError:
+                n_malformed += 1
+                continue
+            if end < start or fields[6] not in ("+", "-"):
+                n_malformed += 1
                 continue
 
-            chrom, source, feature_type = fields[0], fields[1], fields[2]
-            start, end = int(fields[3]), int(fields[4])
-            strand = fields[6]
-            attributes = fields[8]
-
-            # Extract transcript_id
-            transcript_id = None
-            for attr in attributes.split(";"):
-                attr = attr.strip()
-                if attr.startswith("transcript_id"):
-                    parts = attr.split()
-                    if len(parts) >= 2:
-                        transcript_id = parts[1].strip('"')
-                        break
-
+            chrom, feature_type, strand = fields[0], fields[2], fields[6]
+            transcript_id = _gtf_attr(fields[8], "transcript_id")
             if transcript_id is None:
                 continue
 
@@ -67,6 +108,8 @@ def parse_gtf(gtf_file: str) -> dict:
             elif feature_type == "CDS":
                 transcripts[transcript_id]["cds"].append((chrom, start, end, strand))
 
+    if n_malformed:
+        logging.warning("Skipped %d malformed GTF lines.", n_malformed)
     logging.info("Parsed %d transcripts from GTF.", len(transcripts))
     return transcripts
 
@@ -74,44 +117,64 @@ def parse_gtf(gtf_file: str) -> dict:
 def find_utr_regions(transcripts: dict) -> dict:
     """Identify 5' UTR and 3' UTR regions for each transcript.
 
+    UTR regions are returned in ascending genomic order; the caller is
+    responsible for transcript-order joining and strand orientation.
+
     Args:
         transcripts: Output from parse_gtf().
 
     Returns:
-        Dict mapping transcript_id -> {'5UTR': [...], '3UTR': [...]}.
+        Dict mapping transcript_id -> {'5UTR': [...], '3UTR': [...],
+        'strand': '+'|'-'}.
     """
-    utr_info = defaultdict(lambda: {"5UTR": [], "3UTR": []})
+    utr_info = {}
+    n_no_cds = 0
+    n_inconsistent = 0
 
     for tx_id, data in transcripts.items():
         exons = sorted(data["exons"], key=lambda x: x[1])
         cds = sorted(data["cds"], key=lambda x: x[1])
 
         if not cds or not exons:
+            n_no_cds += 1
             continue
 
+        if len({r[3] for r in exons} | {r[3] for r in cds}) != 1:
+            logging.warning("Transcript %s has mixed strands; skipped.", tx_id)
+            n_inconsistent += 1
+            continue
+        if {r[0] for r in exons} != {r[0] for r in cds}:
+            logging.warning(
+                "Transcript %s has exons and CDS on different chromosomes; skipped.",
+                tx_id,
+            )
+            n_inconsistent += 1
+            continue
+
+        strand = exons[0][3]
         cds_start = cds[0][1]
         cds_end = cds[-1][2]
 
-        for chrom, exon_start, exon_end, strand in exons:
-            if strand == "+":
-                if exon_start < cds_start:
-                    utr_info[tx_id]["5UTR"].append(
-                        (chrom, exon_start, min(exon_end, cds_start - 1))
-                    )
-                if exon_end > cds_end:
-                    utr_info[tx_id]["3UTR"].append(
-                        (chrom, max(exon_start, cds_end + 1), exon_end)
-                    )
-            elif strand == "-":
-                if exon_end > cds_end:
-                    utr_info[tx_id]["5UTR"].append(
-                        (chrom, max(exon_start, cds_end + 1), exon_end)
-                    )
-                if exon_start < cds_start:
-                    utr_info[tx_id]["3UTR"].append(
-                        (chrom, exon_start, min(exon_end, cds_start - 1))
-                    )
+        left, right = [], []
+        for chrom, exon_start, exon_end, _ in exons:
+            if exon_start < cds_start:
+                left.append((chrom, exon_start, min(exon_end, cds_start - 1), strand))
+            if exon_end > cds_end:
+                right.append((chrom, max(exon_start, cds_end + 1), exon_end, strand))
 
+        if strand == "+":
+            utr_info[tx_id] = {"5UTR": left, "3UTR": right, "strand": strand}
+        else:
+            utr_info[tx_id] = {"5UTR": right, "3UTR": left, "strand": strand}
+
+    if n_no_cds:
+        logging.info(
+            "Skipped %d transcripts without both exon and CDS records (non-coding "
+            "or incomplete).",
+            n_no_cds,
+        )
+    if n_inconsistent:
+        logging.warning("Skipped %d inconsistent transcripts.", n_inconsistent)
     return utr_info
 
 
@@ -123,6 +186,11 @@ def extract_sequences(
 ) -> None:
     """Extract UTR sequences from genome and write outputs.
 
+    Fragments of one UTR are joined in transcript order (5'->3');
+    negative-strand sequences are reverse-complemented. A UTR whose
+    chromosome is missing from the genome FASTA is omitted entirely
+    (no partial sequences) with a warning.
+
     Args:
         utr_info: Output from find_utr_regions().
         genome_fasta: Path to genome FASTA file.
@@ -131,9 +199,8 @@ def extract_sequences(
     """
     from Bio import SeqIO
 
-    logging.info("Loading genome: %s", genome_fasta)
-    genome = SeqIO.to_dict(SeqIO.parse(genome_fasta, "fasta"))
-    logging.info("Loaded %d chromosomes.", len(genome))
+    logging.info("Indexing genome: %s", genome_fasta)
+    genome = SeqIO.index(genome_fasta, "fasta")
 
     n_5utr = 0
     n_3utr = 0
@@ -143,16 +210,34 @@ def extract_sequences(
         writer.writerow(["transcript_id", "5UTR_length", "3UTR_length"])
 
         for tx_id, utrs in utr_info.items():
+            strand = utrs["strand"]
             lengths = {"5UTR": 0, "3UTR": 0}
 
             for utr_type in ("5UTR", "3UTR"):
-                for chrom, start, end in utrs[utr_type]:
+                fragments = utrs[utr_type]
+                if not fragments:
+                    continue
+                # Transcript order: ascending genomic on +, descending on -.
+                fragments = sorted(
+                    fragments, key=lambda f: f[1], reverse=(strand == "-")
+                )
+                parts = []
+                for chrom, start, end, _ in fragments:
                     if chrom not in genome:
-                        logging.warning("Chromosome %s not in genome FASTA.", chrom)
-                        continue
-                    seq = genome[chrom].seq[start - 1:end]  # 1-based to 0-based
-                    lengths[utr_type] += len(seq)
-                    fasta_out.write(f">{tx_id}_{utr_type}\n{seq}\n")
+                        logging.warning(
+                            "Chromosome %s not in genome FASTA; %s %s omitted.",
+                            chrom, tx_id, utr_type,
+                        )
+                        parts = None
+                        break
+                    seq = genome[chrom].seq[start - 1:end]  # 1-based inclusive
+                    if strand == "-":
+                        seq = seq.reverse_complement()
+                    parts.append(str(seq))
+                if parts:
+                    seq_str = "".join(parts)
+                    lengths[utr_type] = len(seq_str)
+                    fasta_out.write(f">{tx_id}_{utr_type}\n{seq_str}\n")
 
             if lengths["5UTR"] > 0:
                 n_5utr += 1
@@ -161,7 +246,10 @@ def extract_sequences(
 
             writer.writerow([tx_id, lengths["5UTR"], lengths["3UTR"]])
 
-    logging.info("Extracted: %d transcripts with 5'UTR, %d with 3'UTR -> %s", n_5utr, n_3utr, output_fasta)
+    logging.info(
+        "Extracted: %d transcripts with 5'UTR, %d with 3'UTR -> %s",
+        n_5utr, n_3utr, output_fasta,
+    )
     logging.info("Length summary -> %s", output_csv)
 
 
@@ -173,6 +261,11 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="""\
 examples:
   python extract_utr.py --gtf annotation.gtf --genome genome.fa -f utr.fa -c utr_lengths.csv
+
+notes:
+  UTR fragments spanning multiple exons are joined in transcript order
+  (5'->3'); negative-strand sequences are reverse-complemented. One
+  FASTA record per transcript and UTR type ({tx_id}_5UTR/{tx_id}_3UTR).
 """,
     )
     parser.add_argument("--gtf", type=str, required=True, help="Input GTF annotation file.")
