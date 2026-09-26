@@ -540,10 +540,10 @@ Rules for new or modified scripts — keep the toolbox uniform:
 Per-script requirements are mapped in [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md); tool locations are pinned once in `config/env.local.sh` — see [Configuration](#configuration). Verify the current machine with `tools/doctor.sh`.
 
 ### Bioinformatics Tools
-sra-tools (prefetch / fasterq-dump / fastq-dump) · GNU parallel · Aspera ascp · BLAST+ (blastn / blastp / makeblastdb) · SAMtools · subread featureCounts · RSeQC (infer_experiment.py) · deepTools (bamCoverage) · UCSC utils (gtf2bed / gff2bed) · bedtools · PLINK / VCFTools · DSSP (mkdssp) · PyMOL · ChimeraX · wget
+sra-tools (prefetch / fasterq-dump / fastq-dump) · GNU parallel · Aspera ascp · BLAST+ (blastn / blastp / makeblastdb) · SAMtools · subread featureCounts · RSeQC (infer_experiment.py) · deepTools (bamCoverage) · UCSC utils (gtf2bed / gff2bed) · PLINK / VCFTools · DSSP (mkdssp) · PyMOL · ChimeraX · wget
 
 ### Python Packages
-biopython, pandas, numpy, matplotlib, networkx, scipy, scikit-learn, python-louvain, tqdm, lxml, pyteomics, pybedtools, markov-clustering
+biopython, pandas, numpy, matplotlib, networkx, scipy, scikit-learn, python-louvain, tqdm, lxml, pyteomics, markov-clustering
 
 ### R / Bioconductor Packages
 DESeq2, edgeR, clusterProfiler, GOSemSim, aPEAR, ComplexHeatmap, circlize, ggplot2, ggsci, cowplot, patchwork, aplot, ggtree, Gviz, plotrix, GenomicFeatures, GenomicRanges, rtracklayer, Biostrings, sangerseqR, Mfuzz, Biobase, BiocParallel, gplots, RColorBrewer, amap, magrittr, UpSetR, qqman, data.table, dplyr, ape, getopt — full per-script matrix in [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md)

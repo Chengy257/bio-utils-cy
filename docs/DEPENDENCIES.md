@@ -33,7 +33,7 @@ Legend: **Tools** = external executables · **Py** = Python packages (import nam
 | `genome_format_converter.sh` | gtf2bed, gff2bed; UCSC kent utils gff2gtf, gtfToGenePred, gff3ToGenePred, genePredToBed (see note) | — |
 | `gtf_standardize.sh` | — (self-contained awk) | — |
 | `bam_to_bigwig.sh` | samtools, bamCoverage (deepTools) | — |
-| `bed12_effective_length.py` | bedtools (via pybedtools) | pybedtools |
+| `bed12_effective_length.py` | — | — |
 | `fasta_to_alphafold_json.py` | — | — |
 
 > **Note (this machine):** `gtf2bed`/`gff2bed` are pinned in `config/env.local.sh`. The kent utilities `gff2gtf`, `gtfToGenePred`, `gff3ToGenePred`, `genePredToBed` are **not installed** — the `gff2gtf`, `gtf2gp`, `gp2bed` modes of `genome_format_converter.sh` are unavailable until they are provided (install kent-utils, then pass paths via the script's own options).
@@ -53,7 +53,7 @@ Legend: **Tools** = external executables · **Py** = Python packages (import nam
 |--------|-------|----|
 | `extract_utr.py` | — | Bio |
 | `genepred_utr_to_bed12.py` | — | — |
-| `filter_long_introns.py` | — | tqdm |
+| `filter_long_introns.py` | — | — |
 | `maf_extract_regions.py` | — | Bio |
 
 ## RNA-seq
@@ -131,7 +131,7 @@ Legend: **Tools** = external executables · **Py** = Python packages (import nam
 
 ## Summary: machine-level requirements
 
-- **External tools** (21): prefetch, fasterq-dump, fastq-dump, fastqc, parallel, ascp, blastn, blastp, makeblastdb, mkdssp, pymol, ChimeraX, plink, vcftools, featureCounts, samtools, infer_experiment.py, bedtools, bamCoverage, gtf2bed, gff2bed — pin each in `config/env.local.sh`.
-- **Python** (13): biopython, pandas, numpy, matplotlib, networkx, scipy, scikit-learn, community (python-louvain), tqdm, lxml, pyteomics, pybedtools, markov-clustering.
+- **External tools** (20): prefetch, fasterq-dump, fastq-dump, fastqc, parallel, ascp, blastn, blastp, makeblastdb, mkdssp, pymol, ChimeraX, plink, vcftools, featureCounts, samtools, infer_experiment.py, bamCoverage, gtf2bed, gff2bed — pin each in `config/env.local.sh`. (`bedtools` is no longer needed by any script; the leftover `BUC_BEDTOOLS_BIN` slot in `config/env.sh` is slated for removal in the cleanup phase.)
+- **Python** (12): biopython, pandas, numpy, matplotlib, networkx, scipy, scikit-learn, community (python-louvain), tqdm, lxml, pyteomics, markov-clustering.
 - **R** (33): see tables above — the Rscript interpreter and library path come from `BUC_RSCRIPT_BIN` / `BUC_R_LIBS`.
 - **Credentials**: `NCBI_EMAIL`, `NCBI_API_KEY` for NCBI E-utilities scripts.
