@@ -5,6 +5,31 @@
 # Description: BLAST-based protein sequence clustering and network
 #              visualization using MCL (Markov Clustering Algorithm).
 # Created Time: 2026
+#
+# Changelog:
+#   v1.1.0  2026-09-26
+#   - FIX: fatal NameError — main() imported SeqIO/numpy/markov_
+#     clustering/networkx/matplotlib/subprocess.run as main-local names
+#     while the module functions referenced them globally, so the first
+#     use crashed (masked until now by the missing-dependency exit).
+#     Imports live at module level; missing packages give one clean
+#     error and exit 1 (--help/--version keep working).
+#   - FIX: blastp/makeblastdb were invoked through `shell=True` with
+#     f-string command strings (quoting/injection hazards); both now
+#     run via argument lists. A failing BLAST command exits 1 with an
+#     error instead of an unhandled traceback.
+#   - FIX: self-hits (q==s, pident=100) from the all-vs-all run were
+#     written into the matrix diagonal and fed to MCL; the diagonal is
+#     now zeroed before clustering.
+#   - FIX: the BLAST database cleanup listed a hardcoded, version-
+#     dependent set of extensions; all "<prefix>_db.*" files are now
+#     removed by glob.
+#   - FIX: cm.get_cmap was removed in matplotlib 3.9 (AttributeError
+#     during visualization); the colormaps registry is used instead.
+#   - DOC: --identity-threshold takes a fraction (0-1) that is compared
+#     against BLAST pident/100; the range is validated, making the old
+#     "pass 50 and silently get a 5000% threshold" trap impossible.
+#   - --threads defaults to BUC_THREADS (config/env.sh) when set.
 #########################################################################
 """BLAST-based protein sequence clustering and network visualization.
 
@@ -12,7 +37,8 @@ Runs BLASTP all-vs-all, builds a similarity matrix, applies MCL clustering,
 and outputs cluster assignments, a SIF network file, and a publication-quality
 network visualization PDF.
 
-Requires: blastp, makeblastdb (NCBI BLAST+), markov-clustering, networkx, matplotlib
+Requires: blastp, makeblastdb (NCBI BLAST+), markov-clustering, networkx, numpy,
+matplotlib, biopython
 """
 
 import argparse
@@ -21,9 +47,28 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from subprocess import run, CalledProcessError
+from typing import List, Tuple
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
+
+try:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import networkx as nx
+    import numpy as np
+    from Bio import SeqIO
+
+    _IMPORT_ERROR = None
+except ImportError as _e:  # pragma: no cover - exercised via subprocess
+    _IMPORT_ERROR = str(_e.name)
+
+
+def _missing_dep_exit(name: str, pip_hint: str) -> None:
+    logging.error("Missing dependency: %s. Install with: pip install %s", name, pip_hint)
+    sys.exit(1)
 
 
 def resolve_tool(name: str) -> str:
@@ -39,20 +84,6 @@ def resolve_tool(name: str) -> str:
             f"{name} not found in PATH; set BUC_{name.upper()}_BIN in config/env.local.sh"
         )
     return found
-
-
-def _check_dependencies() -> None:
-    """Import and validate all required dependencies."""
-    try:
-        import matplotlib  # noqa: F401
-        import markov_clustering  # noqa: F401
-        import networkx  # noqa: F401
-        import numpy  # noqa: F401
-    except ImportError as e:
-        import sys
-        print(f"ERROR: Missing dependency: {e.name}", file=sys.stderr)
-        print("Install with: pip install markov-clustering networkx numpy matplotlib biopython", file=sys.stderr)
-        sys.exit(1)
 
 
 def read_sequences(fasta_file: str) -> list:
@@ -91,20 +122,25 @@ def run_blast(
     Returns:
         Path to BLAST output file.
     """
-    if not os.path.exists(f"{blast_db}.pin"):
-        logging.info("Creating BLAST database: %s", blast_db)
-        makeblastdb = resolve_tool("makeblastdb")
-        cmd = f"{makeblastdb} -in {fasta_file} -dbtype prot -out {blast_db}"
-        run(cmd, shell=True, check=True)
+    try:
+        if not os.path.exists(f"{blast_db}.pin"):
+            logging.info("Creating BLAST database: %s", blast_db)
+            makeblastdb = resolve_tool("makeblastdb")
+            run([makeblastdb, "-in", fasta_file, "-dbtype", "prot", "-out", blast_db],
+                check=True, capture_output=True)
 
-    logging.info("Running BLASTP (evalue=%g, threads=%d)...", evalue, threads)
-    blastp = resolve_tool("blastp")
-    cmd = (
-        f"{blastp} -query {fasta_file} -db {blast_db} "
-        f"-evalue {evalue} -outfmt 6 -out {output_file} "
-        f"-num_threads {threads}"
-    )
-    run(cmd, shell=True, check=True)
+        logging.info("Running BLASTP (evalue=%g, threads=%d)...", evalue, threads)
+        blastp = resolve_tool("blastp")
+        run([
+            blastp, "-query", fasta_file, "-db", blast_db,
+            "-evalue", str(evalue), "-outfmt", "6", "-out", output_file,
+            "-num_threads", str(threads),
+        ], check=True, capture_output=True)
+    except CalledProcessError as exc:
+        logging.error("BLAST command failed (%d): %s",
+                      exc.returncode, exc.stderr.decode(errors="replace") if exc.stderr else "")
+        sys.exit(1)
+
     logging.info("BLAST output: %s", output_file)
     return output_file
 
@@ -119,15 +155,17 @@ def parse_blast_results(
     Args:
         blast_file: Path to BLAST -outfmt 6 file.
         seq_ids: Ordered list of sequence IDs.
-        identity_threshold: Minimum percent identity (0-1) to include.
+        identity_threshold: Minimum identity as a fraction (0-1); compared
+            against pident/100.
 
     Returns:
-        Tuple of (similarity_matrix, seq_ids).
+        Tuple of (similarity_matrix, seq_ids). Symmetric, pident/100 in
+        [threshold, 1]; the diagonal (self-hits) is zero.
     """
     n = len(seq_ids)
     matrix = np.zeros((n, n))
     id_to_idx = {sid: i for i, sid in enumerate(seq_ids)}
-    threshold_pct = identity_threshold * 100
+    threshold_frac = identity_threshold
 
     with open(blast_file) as fh:
         for line in fh:
@@ -135,15 +173,19 @@ def parse_blast_results(
             if len(parts) < 3:
                 continue
             qseqid, sseqid, pident = parts[0], parts[1], float(parts[2])
+            if qseqid == sseqid:
+                continue  # self-hit
             if qseqid in id_to_idx and sseqid in id_to_idx:
                 i, j = id_to_idx[qseqid], id_to_idx[sseqid]
-                if pident >= threshold_pct:
-                    matrix[i, j] = matrix[j, i] = pident
+                if pident / 100 >= threshold_frac:
+                    matrix[i, j] = matrix[j, i] = pident / 100
+
+    np.fill_diagonal(matrix, 0)
 
     n_edges = np.count_nonzero(matrix) // 2
     logging.info(
-        "Similarity matrix: %d sequences, %d edges (threshold=%.0f%%).",
-        n, n_edges, threshold_pct,
+        "Similarity matrix: %d sequences, %d edges (identity>=%.0f%%).",
+        n, n_edges, threshold_frac * 100,
     )
     return matrix, seq_ids
 
@@ -158,6 +200,10 @@ def run_mcl(matrix: "np.ndarray", inflation: float = 2.0) -> list:
     Returns:
         List of clusters, each cluster is a list of node indices.
     """
+    try:
+        import markov_clustering as mc
+    except ImportError:
+        _missing_dep_exit("markov-clustering", "markov-clustering")
     result = mc.run_mcl(matrix, inflation=inflation)
     clusters = mc.get_clusters(result)
     logging.info("MCL produced %d clusters (inflation=%.1f).", len(clusters), inflation)
@@ -235,7 +281,7 @@ def visualize_network(
     clusters_attr = nx.get_node_attributes(G, "cluster")
     unique_clusters = sorted(set(clusters_attr.values()))
     n_clusters = len(unique_clusters)
-    cmap = cm.get_cmap("tab20", max(n_clusters, 1))
+    cmap = plt.colormaps["tab20"].resampled(max(n_clusters, 1))
 
     cluster_colors = {cid: cmap(i / max(n_clusters, 1)) for i, cid in enumerate(unique_clusters)}
     node_colors = [cluster_colors[clusters_attr[n]] for n in G.nodes()]
@@ -266,6 +312,10 @@ def build_parser() -> argparse.ArgumentParser:
 examples:
   python blast_sequence_network.py -i proteins.fa -o result
   python blast_sequence_network.py -i proteins.fa -o result --evalue 1e-10 --inflation 2.5 --threads 4
+
+notes:
+  --identity-threshold is a fraction (0-1), e.g. 0.5 = 50% identity.
+  Requires the markov-clustering package for the MCL step.
 """,
     )
     parser.add_argument(
@@ -282,15 +332,15 @@ examples:
     )
     parser.add_argument(
         "--identity-threshold", type=float, default=0.5,
-        help="Minimum percent identity (0-1) for network edges (default: 0.5).",
+        help="Minimum identity as a fraction 0-1 for network edges (default: 0.5 = 50%%).",
     )
     parser.add_argument(
         "--inflation", type=float, default=2.0,
         help="MCL inflation parameter; higher = more clusters (default: 2.0).",
     )
     parser.add_argument(
-        "-t", "--threads", type=int, default=1,
-        help="Number of BLAST threads (default: 1).",
+        "-t", "--threads", type=int, default=int(os.environ.get("BUC_THREADS", "1") or 1),
+        help="Number of BLAST threads (default: BUC_THREADS or 1).",
     )
     parser.add_argument(
         "--log-level", type=str, default="INFO",
@@ -313,17 +363,16 @@ def main() -> None:
         level=getattr(logging, args.log_level),
     )
 
-    _check_dependencies()
+    if _IMPORT_ERROR is not None:
+        _missing_dep_exit(
+            _IMPORT_ERROR,
+            "markov-clustering networkx numpy matplotlib biopython",
+        )
 
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.cm as cm
-    import matplotlib.pyplot as plt
-    import markov_clustering as mc
-    import networkx as nx
-    import numpy as np
-    from Bio import SeqIO
-    from subprocess import run, CalledProcessError
+    if not 0 <= args.identity_threshold <= 1:
+        parser.error("--identity-threshold must be a fraction in [0, 1]")
+    if args.threads < 1:
+        parser.error("--threads must be >= 1")
 
     input_path = Path(args.input)
     if not input_path.is_file():
@@ -353,22 +402,21 @@ def main() -> None:
         threads=args.threads,
     )
 
-    # Parse and cluster
-    matrix, _ = parse_blast_results(blast_output, seq_ids, args.identity_threshold)
-    clusters = run_mcl(matrix, inflation=args.inflation)
+    # Parse and cluster; DB files are removed even on abort.
+    prefix_path = Path(args.output_prefix)
+    try:
+        matrix, _ = parse_blast_results(blast_output, seq_ids, args.identity_threshold)
+        clusters = run_mcl(matrix, inflation=args.inflation)
 
-    # Save outputs
-    save_clusters(clusters, seq_ids, f"{args.output_prefix}_clusters.txt")
+        # Save outputs
+        save_clusters(clusters, seq_ids, f"{args.output_prefix}_clusters.txt")
 
-    G = build_network(clusters, seq_ids)
-    save_sif(G, f"{args.output_prefix}_network.sif")
-    visualize_network(G, f"{args.output_prefix}_network.pdf")
-
-    # Clean up BLAST temp files
-    for ext in (".phr", ".pin", ".pdb", ".psq", ".pog", ".pos", ".pot", ".pto"):
-        db_file = f"{args.output_prefix}_db{ext}"
-        if os.path.exists(db_file):
-            os.unlink(db_file)
+        G = build_network(clusters, seq_ids)
+        save_sif(G, f"{args.output_prefix}_network.sif")
+        visualize_network(G, f"{args.output_prefix}_network.pdf")
+    finally:
+        for db_file in sorted(prefix_path.parent.glob(f"{prefix_path.name}_db.*")):
+            db_file.unlink()
 
 
 if __name__ == "__main__":
