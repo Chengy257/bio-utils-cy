@@ -6,22 +6,35 @@
 #              conditional entropy) for FASTA sequences using sliding
 #              window k-mer analysis.
 # Created Time: 2026
+#
+# Changelog:
+#   v1.1.0  2026-09-26
+#   - FIX: -b/--base was parsed as int while the help advertised
+#     "e for nats", so passing e failed at argparse; the option now
+#     accepts any positive float (2 = bits, 10 = dits, Euler's number
+#     e ~ 2.71828 = nats) and is validated.
+#   - FIX: sequences shorter than the window+1 were passed to
+#     seq_entropies with undefined results; they are now skipped with
+#     a warning, and a run that processes zero sequences exits 1.
 #########################################################################
 """Calculate sequence complexity metrics for FASTA sequences.
 
 Computes block entropy and conditional entropy using k-mer analysis,
 providing measures of sequence randomness and predictability.
 
+Sequences shorter than window+1 symbols are skipped with a warning.
+
 Requires: seq_entropies package
 """
 
 import argparse
 import logging
+import math
 import sys
 from pathlib import Path
 from typing import Tuple
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 
 def calc_complexity(seq: str, window: int = 3, base: int = 2) -> Tuple[float, float]:
@@ -61,14 +74,29 @@ def process_fasta(
 
     results = []
     total = 0
+    n_skipped = 0
     for rec in SeqIO.parse(input_path, "fasta"):
         seq = str(rec.seq)
         if not seq:
             logging.warning("Empty sequence: %s, skipping.", rec.id)
+            n_skipped += 1
+            continue
+        if len(seq) < window + 1:
+            logging.warning(
+                "Sequence %s shorter than window+1 (%d <= %d), skipping.",
+                rec.id, len(seq), window,
+            )
+            n_skipped += 1
             continue
         h, c = calc_complexity(seq, window=window, base=base)
         results.append((rec.id, h, c))
         total += 1
+
+    if not results:
+        logging.error("No sequences processed from %s (all empty/too short or no records).", input_path)
+        sys.exit(1)
+    if n_skipped:
+        logging.warning("Skipped %d sequences.", n_skipped)
 
     with open(output_path, "w") as fout:
         fout.write("seq_id\tBlockEntropy\tCondEntropy\n")
@@ -88,8 +116,12 @@ examples:
   # Basic usage
   python sequence_complexity.py -i sequences.fa -o complexity.tsv
 
-  # Custom window size and base
+  # Custom window size and logarithm base
   python sequence_complexity.py -i sequences.fa -o complexity.tsv -w 4 -b 2
+
+notes:
+  -b/--base accepts any positive float: 2 = bits (default), 10 = dits,
+  2.71828... (Euler's number) = nats.
 """,
     )
     parser.add_argument(
@@ -105,8 +137,9 @@ examples:
         help="K-mer window size for entropy calculation (default: 3).",
     )
     parser.add_argument(
-        "-b", "--base", type=int, default=2,
-        help="Logarithm base: 2 for bits, 10 for dits, e for nats (default: 2).",
+        "-b", "--base", type=float, default=2,
+        help="Logarithm base: 2 for bits (default), 10 for dits, "
+             "Euler's number e (~2.71828) for nats.",
     )
     parser.add_argument(
         "--log-level", type=str, default="INFO",
@@ -136,6 +169,10 @@ def main() -> None:
 
     if args.window < 1:
         logging.error("Window size must be >= 1.")
+        sys.exit(1)
+
+    if not (args.base > 0) or args.base == 1:
+        logging.error("Base must be a positive number other than 1 (got %s).", args.base)
         sys.exit(1)
 
     try:
