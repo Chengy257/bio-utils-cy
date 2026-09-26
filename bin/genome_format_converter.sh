@@ -5,6 +5,23 @@
 # Description: Convert between genome annotation formats (GFF3/GTF/BED)
 #              using UCSC tools.
 # Created Time: 2026
+#
+# Changelog:
+#   v1.1.0  2026-09-26
+#   - FIX: the auto-generated output name truncated at the first dot
+#     (a.b.c.gff3 -> a.gtf; paths with dotted directories broke); only
+#     the last extension is now stripped and the input directory is
+#     kept.
+#   - FIX: -t/--tmpdir was parsed but never used; it now sets $TMPDIR
+#     for the kent tools and the temporary output file.
+#   - FIX: an explicitly given tool path that is not executable fell
+#     through to the config slot / PATH silently; it now errors.
+#   - FIX: only the tools required by the selected mode are resolved
+#     (previously all four had to exist for any mode to run).
+#   - FIX: output is written to a temporary file and moved into place
+#     on success; a failed pipeline no longer leaves a partial output
+#     behind. Temp files are cleaned up via an EXIT trap.
+#   - log_info goes to stderr.
 #########################################################################
 set -euo pipefail
 
@@ -13,26 +30,29 @@ _my_conf="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../config/env.sh"
 if [ -f "${_my_conf}" ]; then . "${_my_conf}"; fi
 unset -v _my_conf
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 
 usage() {
     cat <<EOF
 Usage: $(basename "$0") [OPTIONS] -i <INPUT> -m <MODE>
 
 Convert between genome annotation formats using UCSC tools.
+(gzip-compressed input is not supported.)
 
 Modes:
   gff2gtf    Convert GFF3 to GTF
   gtf2bed    Convert GTF to BED
-  gff2bed    Convert GFF3 to BED (via GTF)
+  gff2bed    Convert GFF3 to BED (via genePred)
   gtf2gp     Convert GTF to genePred
   gp2bed     Convert genePred to BED
 
 Options:
   -i, --input   <FILE>    Input file (required)
-  -o, --output  <FILE>    Output file (default: auto-generated from input name)
+  -o, --output  <FILE>    Output file (default: input path with the last
+                          extension replaced per mode)
   -m, --mode    <MODE>    Conversion mode (required)
-  -t, --tmpdir  <DIR>     Temporary directory (default: /tmp)
+  -t, --tmpdir  <DIR>     Temporary directory (default: /tmp; used for the
+                          kent tools' temp files and the staging output)
       --gff3togenepred  <PATH>  Path to gff3ToGenePred (default: auto-detect)
       --genepredtogtf   <PATH>  Path to genePredToGtf (default: auto-detect)
       --genepredtobed   <PATH>  Path to genePredToBed (default: auto-detect)
@@ -48,17 +68,25 @@ EOF
 }
 
 # Logging
-log_info()  { echo "[INFO]  $1"; }
+log_info()  { echo "[INFO]  $1" >&2; }
 log_warn()  { echo "[WARN]  $1" >&2; }
 log_error() { echo "[ERROR] $1" >&2; exit 1; }
 
-# Find UCSC tool
+# Staging output (removed on exit; moved to the final path on success)
+TMP_OUT=""
+cleanup() { [[ -n "${TMP_OUT}" ]] && rm -f "${TMP_OUT}"; return 0; }
+trap cleanup EXIT
+
+# Find UCSC tool (CLI option > BUC_<TOOL>_BIN slot > PATH)
 find_tool() {
     local tool_name="$1"
     local explicit="$2"
-    if [[ -n "${explicit}" && -x "${explicit}" ]]; then
-        echo "${explicit}"
-        return
+    if [[ -n "${explicit}" ]]; then
+        if [[ -x "${explicit}" ]]; then
+            echo "${explicit}"
+            return
+        fi
+        log_error "Tool path given but not executable: ${explicit}"
     fi
     # Config-provided path (BUC_<TOOL>_BIN from config/env.sh) beats PATH
     local slot_var="BUC_$(printf '%s' "${tool_name}" | tr 'a-z' 'A-Z' | tr '-' '_')_BIN"
@@ -80,7 +108,7 @@ find_tool() {
 INPUT=""
 OUTPUT=""
 MODE=""
-TMPDIR="/tmp"
+TMPDIR_VALUE="/tmp"
 TOOL_GFF3TOGP=""
 TOOL_GP2GTF=""
 TOOL_GP2BED=""
@@ -92,7 +120,7 @@ while [[ $# -gt 0 ]]; do
         -i|--input)   INPUT="$2"; shift 2 ;;
         -o|--output)  OUTPUT="$2"; shift 2 ;;
         -m|--mode)    MODE="$2"; shift 2 ;;
-        -t|--tmpdir)  TMPDIR="$2"; shift 2 ;;
+        -t|--tmpdir)  TMPDIR_VALUE="$2"; shift 2 ;;
         --gff3togenepred) TOOL_GFF3TOGP="$2"; shift 2 ;;
         --genepredtogtf)  TOOL_GP2GTF="$2"; shift 2 ;;
         --genepredtobed)  TOOL_GP2BED="$2"; shift 2 ;;
@@ -111,42 +139,55 @@ done
 VALID_MODES="gff2gtf gtf2bed gff2bed gtf2gp gp2bed"
 echo "${VALID_MODES}" | grep -qw "${MODE}" || log_error "Invalid mode: ${MODE}. Valid modes: ${VALID_MODES}"
 
-# Auto-generate output name
+[[ -d "${TMPDIR_VALUE}" ]] || log_error "Temp directory does not exist: ${TMPDIR_VALUE}"
+export TMPDIR="${TMPDIR_VALUE%/}"
+
+# Auto-generate output name: input directory kept, only the last
+# extension replaced (a.b.c.gff3 -> a.b.c.gtf).
 if [[ -z "${OUTPUT}" ]]; then
-    BASENAME="${INPUT%%.*}"
+    in_dir="$(dirname "${INPUT}")"
+    base="$(basename "${INPUT}")"
+    base="${base%.*}"
+    [[ -z "${base}" ]] && base="$(basename "${INPUT}")"  # hidden-file edge
     case "${MODE}" in
-        gff2gtf) OUTPUT="${BASENAME}.gtf" ;;
-        gtf2bed|gff2bed) OUTPUT="${BASENAME}.bed" ;;
-        gtf2gp) OUTPUT="${BASENAME}.gp" ;;
-        gp2bed) OUTPUT="${BASENAME}.bed" ;;
+        gff2gtf) OUTPUT="${in_dir}/${base}.gtf" ;;
+        gtf2bed|gff2bed) OUTPUT="${in_dir}/${base}.bed" ;;
+        gtf2gp) OUTPUT="${in_dir}/${base}.gp" ;;
+        gp2bed) OUTPUT="${in_dir}/${base}.bed" ;;
     esac
     log_info "Output file: ${OUTPUT}"
 fi
 
-# Resolve tools
-GFF3TOGP=$(find_tool "gff3ToGenePred" "${TOOL_GFF3TOGP}")
-GP2GTF=$(find_tool "genePredToGtf" "${TOOL_GP2GTF}")
-GP2BED=$(find_tool "genePredToBed" "${TOOL_GP2BED}")
-GTF2GP=$(find_tool "gtfToGenePred" "${TOOL_GTF2GP}")
+TMP_OUT="$(mktemp "${TMPDIR}/gfc.XXXXXX")"
 
-# Execute conversion
+# Execute conversion (tools resolved per mode; output staged then moved)
 log_info "Converting: ${MODE}"
 case "${MODE}" in
     gff2gtf)
-        "${GFF3TOGP}" "${INPUT}" stdout | "${GP2GTF}" file stdin "${OUTPUT}"
+        GFF3TOGP=$(find_tool "gff3ToGenePred" "${TOOL_GFF3TOGP}")
+        GP2GTF=$(find_tool "genePredToGtf" "${TOOL_GP2GTF}")
+        "${GFF3TOGP}" "${INPUT}" stdout | "${GP2GTF}" file stdin "${TMP_OUT}"
         ;;
     gtf2bed)
-        "${GTF2GP}" "${INPUT}" stdout | "${GP2BED}" stdin "${OUTPUT}"
+        GTF2GP=$(find_tool "gtfToGenePred" "${TOOL_GTF2GP}")
+        GP2BED=$(find_tool "genePredToBed" "${TOOL_GP2BED}")
+        "${GTF2GP}" "${INPUT}" stdout | "${GP2BED}" stdin "${TMP_OUT}"
         ;;
     gff2bed)
-        "${GFF3TOGP}" "${INPUT}" stdout | "${GP2BED}" stdin "${OUTPUT}"
+        GFF3TOGP=$(find_tool "gff3ToGenePred" "${TOOL_GFF3TOGP}")
+        GP2BED=$(find_tool "genePredToBed" "${TOOL_GP2BED}")
+        "${GFF3TOGP}" "${INPUT}" stdout | "${GP2BED}" stdin "${TMP_OUT}"
         ;;
     gtf2gp)
-        "${GTF2GP}" "${INPUT}" "${OUTPUT}"
+        GTF2GP=$(find_tool "gtfToGenePred" "${TOOL_GTF2GP}")
+        "${GTF2GP}" "${INPUT}" "${TMP_OUT}"
         ;;
     gp2bed)
-        "${GP2BED}" "${INPUT}" "${OUTPUT}"
+        GP2BED=$(find_tool "genePredToBed" "${TOOL_GP2BED}")
+        "${GP2BED}" "${INPUT}" "${TMP_OUT}"
         ;;
 esac
 
+mv "${TMP_OUT}" "${OUTPUT}"
+TMP_OUT=""
 log_info "Done: ${OUTPUT}"
