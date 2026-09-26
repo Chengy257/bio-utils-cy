@@ -1,15 +1,30 @@
 #!/bin/bash
-
-##############################################################################
-# GTF File Standardization Tool
+#########################################################################
+# File Name: gtf_standardize.sh
+# Author: ChengYu
+# Description: Standardize GTF files: filter feature types, streamline
+#              attributes, backfill gene_biotype, synthesize gene lines
+#              when absent, and sort the output.
+# Created Time: 2026-03-20
 #
-# Description: Streamline GTF file attributes, keep specified key attributes,
-#              ensure every line contains gene_biotype
-#
-# Author: Auto-generated
-# Date: 2026-03-20
-##############################################################################
-
+# Changelog:
+#   v1.1.0  2026-09-26
+#   - FIX: three-argument match() is a gawk extension; the awk programs
+#     are now POSIX awk (works on gawk, mawk and busybox awk).
+#   - FIX: out-of-order GTFs (transcript lines after their exon/CDS
+#     lines, or after the gene line) silently lost gene_id/gene_biotype/
+#     gene_name backfill; both processing modes now read the file twice
+#     (collect pass, then emit pass), making backfill order-independent.
+#   - FIX: help promised natural chromosome sorting (-k1,1V) but the
+#     code sorted lexicographically (chr10 before chr2); the code now
+#     uses LC_ALL=C sort -k1,1V -k4,4n -k5,5n and the docs agree.
+#   - FIX: attribute strings no longer start with a stray "; " when
+#     gene_id is absent.
+#   - log_info/log_verbose go to stderr; temp files are removed via an
+#     EXIT trap; validate_output takes its arguments properly instead
+#     of relying on dynamic scoping; duplicate rm removed; unknown
+#     --attrs keys are rejected with a clear error.
+#########################################################################
 set -euo pipefail
 
 # --- unified project configuration (paths/defaults; no-op if missing) ---
@@ -19,9 +34,19 @@ unset -v _my_conf
 
 # Default configuration
 DEFAULT_ATTRS="gene_id,transcript_id,gene_name,exon_number,gene_biotype,protein_id"
+KNOWN_ATTRS="gene_id transcript_id gene_name exon_number gene_biotype protein_id"
 OUTPUT_SUFFIX=".standardized.gtf"
 
-# Display help information
+TMP_FILES=()
+cleanup() { rm -f ${TMP_FILES[@]+${TMP_FILES[@]}}; }
+trap cleanup EXIT
+new_tmp() {
+    local t
+    t=$(mktemp) || { log_error "mktemp failed"; exit 1; }
+    TMP_FILES+=("$t")
+    printf '%s\n' "$t"
+}
+
 show_help() {
     cat << EOF
 ================================================================================
@@ -53,7 +78,8 @@ Description:
        - Files with gene lines (e.g., RefSeq): preserve original gene lines
        - Files without gene lines (e.g., RNAcentral): automatically generate gene lines
     6. For files without gene lines, calculate coordinate range for each gene and generate gene lines
-    7. Output is sorted by genomic coordinates (chromosome, start, end) using sort -k1,1V -k4,4n -k5,5n
+    7. Output is sorted by genomic coordinates (chromosome, start, end) using
+       LC_ALL=C sort -k1,1V -k4,4n -k5,5n (natural chromosome order)
 
 Examples:
     # Basic usage (use default configuration)
@@ -72,7 +98,7 @@ Output Format:
     Attribute order: gene_id -> gene_name -> transcript_id -> exon_number -> protein_id -> gene_biotype
 
     Sorting: Output is sorted by genomic coordinates (chromosome, start, end)
-             Using: sort -k1,1 -k4,4n -k5,5n
+             Using: LC_ALL=C sort -k1,1V -k4,4n -k5,5n
 
     Supported feature types and attributes:
         gene:           gene_id, gene_name, gene_biotype
@@ -106,9 +132,9 @@ Output Format:
 EOF
 }
 
-# Logging functions
+# Logging functions (all to stderr; stdout is reserved for output files)
 log_info() {
-    echo "[INFO] $1"
+    echo "[INFO] $1" >&2
 }
 
 log_warn() {
@@ -121,7 +147,7 @@ log_error() {
 
 log_verbose() {
     if [[ "${VERBOSE}" == "true" ]]; then
-        echo "[VERBOSE] $1"
+        echo "[VERBOSE] $1" >&2
     fi
 }
 
@@ -146,7 +172,7 @@ check_overwrite() {
 
 # Check dependencies
 check_dependencies() {
-    local deps=("awk" "grep" "wc")
+    local deps=("awk" "grep" "sort")
     for dep in "${deps[@]}"; do
         if ! command -v "${dep}" &> /dev/null; then
             log_error "Missing dependency: ${dep}"
@@ -158,362 +184,199 @@ check_dependencies() {
 # Detect if file has gene lines
 detect_gene_lines() {
     local input_file=$1
-    local gene_count=$(grep -c $'\tgene\t' "${input_file}" 2>/dev/null || echo "0")
-    gene_count=$(echo "${gene_count}" | tr -d '\n\r' | tr -d ' ')
-    if [[ "${gene_count}" -gt 0 ]]; then
+    local gene_count
+    gene_count=$(grep -c $'\tgene\t' "${input_file}" 2>/dev/null || true)
+    if [[ "${gene_count:-0}" -gt 0 ]]; then
         echo "with_gene"
     else
         echo "without_gene"
     fi
 }
 
-# Process GTF files with gene lines (e.g., RefSeq)
+# ---------------------------------------------------------------------------
+# Shared awk library (POSIX awk) prepended to every program below.
+#
+#   attr_value   : first quoted value of a raw attribute piece, or the
+#                  bare token after the key
+#   parse_attrs  : split column 9 into key->value for the six known keys
+#                  (exact key match; quoted or bare values)
+#   add_attr     : append 'key "value"' with proper "; " separation
+#   emit_attrs   : build the standardized attribute string for a feature
+#   init_attrs   : parse the comma-separated --attrs list
+# ---------------------------------------------------------------------------
+read -r -d '' AWK_LIB <<'AWKLIB' || true
+function attr_value(piece) {
+    if (match(piece, /"[^"]*"/)) {
+        return substr(piece, RSTART + 1, RLENGTH - 2)
+    }
+    sub(/^[^ \t]+[ \t]+/, "", piece)   # drop the key for bare values
+    sub(/[ \t]+$/, "", piece)
+    return piece
+}
+
+function parse_attrs(    i, n, parts, attr, key) {
+    gene_id = ""; transcript_id = ""; gene_name = ""
+    gene_biotype = ""; exon_number = ""; protein_id = ""
+    n = split($9, parts, ";")
+    for (i = 1; i <= n; i++) {
+        attr = parts[i]
+        gsub(/^[ \t]+|[ \t]+$/, "", attr)
+        if (attr == "") continue
+        key = attr
+        sub(/[ \t].*$/, "", key)
+        if (key == "gene_id")                         gene_id = attr_value(attr)
+        else if (key == "transcript_id")              transcript_id = attr_value(attr)
+        else if (key == "gene_name" || key == "gene") gene_name = attr_value(attr)
+        else if (key == "gene_biotype")               gene_biotype = attr_value(attr)
+        else if (key == "exon_number")                exon_number = attr_value(attr)
+        else if (key == "protein_id")                 protein_id = attr_value(attr)
+    }
+}
+
+function add_attr(result, key, value) {
+    if (value == "") return result
+    if (result == "") return key " \"" value "\""
+    return result "; " key " \"" value "\""
+}
+
+function emit_attrs(ftype,    res) {
+    res = ""
+    if (wanted_attrs["gene_id"])        res = add_attr(res, "gene_id", gene_id)
+    if (wanted_attrs["gene_name"])      res = add_attr(res, "gene_name", gene_name)
+    if (wanted_attrs["transcript_id"] && ftype != "gene") {
+        res = add_attr(res, "transcript_id", transcript_id)
+    }
+    if (wanted_attrs["exon_number"] && ftype != "gene" && ftype != "transcript") {
+        res = add_attr(res, "exon_number", exon_number)
+    }
+    if (wanted_attrs["protein_id"] && (ftype == "CDS" || ftype == "start_codon" || ftype == "stop_codon")) {
+        res = add_attr(res, "protein_id", protein_id)
+    }
+    if (wanted_attrs["gene_biotype"])   res = add_attr(res, "gene_biotype", gene_biotype)
+    return res
+}
+
+function init_attrs(attrs,    i, n, list) {
+    split("", wanted_attrs)   # POSIX idiom: clear the array
+    n = split(attrs, list, ",")
+    for (i = 1; i <= n; i++) wanted_attrs[list[i]] = 1
+}
+AWKLIB
+
+# Sort: natural chromosome order, then start/end (locale-independent).
+sort_output() {
+    local src=$1 dst=$2
+    LC_ALL=C sort -k1,1V -k4,4n -k5,5n "${src}" > "${dst}"
+}
+
+# Process GTF files with gene lines (e.g., RefSeq).
+# Pass 1 collects gene-level biotype/name; pass 2 emits. Backfill is
+# therefore independent of line order.
 process_with_gene() {
     local input_file=$1
     local output_file=$2
     local attrs=$3
 
-    local temp_unsorted=$(mktemp)
-    awk -F'\t' -v attrs="${attrs}" '
-    BEGIN {
-        OFS="\t"
-        # Parse attribute list
-        n = split(attrs, attr_list, ",")
-        for (i = 1; i <= n; i++) {
-            wanted_attrs[attr_list[i]] = 1
-        }
-    }
-    {
-        if ($3 !~ /^(gene|transcript|exon|CDS|five_prime_utr|three_prime_utr|start_codon|stop_codon)$/) next
+    local temp_unsorted prog
+    temp_unsorted=$(new_tmp)
+    prog=$(printf '%s\n%s\n' "${AWK_LIB}" 'BEGIN { init_attrs(attrs) }
+FNR == NR {
+    if ($3 != "gene") next
+    parse_attrs()
+    if (gene_id == "") next
+    if (gene_biotype != "") gene_biotypes[gene_id] = gene_biotype
+    if (gene_name != "" && gene_name != gene_id) gene_names[gene_id] = gene_name
+    next
+}
+{
+    if ($3 !~ /^(gene|transcript|exon|CDS|five_prime_utr|three_prime_utr|start_codon|stop_codon)$/) next
+    parse_attrs()
 
-        attrs = $9
-        gene_id = ""
-        transcript_id = ""
-        gene_name = ""
-        gene_biotype = ""
-        exon_number = ""
-        protein_id = ""
+    if (gene_biotype == "" && gene_id in gene_biotypes) gene_biotype = gene_biotypes[gene_id]
+    if (gene_name == "" && gene_id in gene_names) gene_name = gene_names[gene_id]
 
-        # Parse attributes
-        n = split(attrs, parts, ";")
-        for (i = 1; i <= n; i++) {
-            attr = parts[i]
-            gsub(/^[ \t]+|[ \t]+$/, "", attr)
+    print $1, $2, $3, $4, $5, $6, $7, $8, emit_attrs($3)
+}')
 
-            if (attr ~ /^gene_id[ \t]+"/) {
-                match(attr, /gene_id[ \t]+"([^"]+)"/, m)
-                if (m[1] != "") gene_id = m[1]
-            } else if (attr ~ /^transcript_id[ \t]+"/ && attr !~ /^transcript_id[ \t]+""/) {
-                match(attr, /transcript_id[ \t]+"([^"]+)"/, m)
-                if (m[1] != "") transcript_id = m[1]
-            } else if (attr ~ /^gene[ \t]+"/) {
-                match(attr, /gene[ \t]+"([^"]+)"/, m)
-                if (m[1] != "") gene_name = m[1]
-            } else if (attr ~ /^gene_biotype[ \t]+"/) {
-                match(attr, /gene_biotype[ \t]+"([^"]+)"/, m)
-                if (m[1] != "") gene_biotype = m[1]
-            } else if (attr ~ /^exon_number[ \t]+/) {
-                if (attr ~ /^exon_number[ \t]+"/) {
-                    match(attr, /exon_number[ \t]+"([^"]+)"/, m)
-                    if (m[1] != "") exon_number = m[1]
-                } else {
-                    match(attr, /exon_number[ \t]+([^; \t]+)/, m)
-                    if (m[1] != "") exon_number = m[1]
-                }
-            } else if (attr ~ /^protein_id[ \t]+"/) {
-                match(attr, /protein_id[ \t]+"([^"]+)"/, m)
-                if (m[1] != "") protein_id = m[1]
-            }
-        }
+    awk -F'\t' -v attrs="${attrs}" -v OFS='\t' "${prog}" \
+        "${input_file}" "${input_file}" > "${temp_unsorted}"
 
-        # Store gene biotype and name
-        if ($3 == "gene" && gene_id != "") {
-            if (gene_biotype != "") gene_biotypes[gene_id] = gene_biotype
-            if (gene_name != "" && gene_name != gene_id) gene_names[gene_id] = gene_name
-        }
-
-        # Get gene biotype
-        if (gene_id != "" && gene_id in gene_biotypes && gene_biotype == "") {
-            gene_biotype = gene_biotypes[gene_id]
-        }
-
-        # Get gene name
-        if (gene_name == "" && gene_id in gene_names) {
-            gene_name = gene_names[gene_id]
-        }
-
-        # Build new attribute string
-        new_attrs = ""
-        sep = ""
-
-        if (wanted_attrs["gene_id"] && gene_id != "") {
-            new_attrs = sep "gene_id \"" gene_id "\""
-            sep = "; "
-        }
-        if (wanted_attrs["gene_name"] && gene_name != "" && gene_name != gene_id) {
-            new_attrs = new_attrs "; gene_name \"" gene_name "\""
-        }
-        if (wanted_attrs["transcript_id"] && ($3 == "transcript" || $3 == "exon" || $3 == "CDS" || $3 == "five_prime_utr" || $3 == "three_prime_utr" || $3 == "start_codon" || $3 == "stop_codon") && transcript_id != "") {
-            new_attrs = new_attrs "; transcript_id \"" transcript_id "\""
-        }
-        if (wanted_attrs["exon_number"] && ($3 == "exon" || $3 == "CDS" || $3 == "five_prime_utr" || $3 == "three_prime_utr" || $3 == "start_codon" || $3 == "stop_codon") && exon_number != "") {
-            new_attrs = new_attrs "; exon_number \"" exon_number "\""
-        }
-        if (wanted_attrs["protein_id"] && ($3 == "CDS" || $3 == "start_codon" || $3 == "stop_codon") && protein_id != "") {
-            new_attrs = new_attrs "; protein_id \"" protein_id "\""
-        }
-        if (wanted_attrs["gene_biotype"] && gene_biotype != "") {
-            new_attrs = new_attrs "; gene_biotype \"" gene_biotype "\""
-        }
-
-        print $1,$2,$3,$4,$5,$6,$7,$8,new_attrs
-    }' "${input_file}" > "${temp_unsorted}"
-
-    # Sort by genomic coordinates
-    sort -k1,1 -k4,4n -k5,5n "${temp_unsorted}" > "${output_file}"
-
-    # Clean up temporary file
-    rm -f "${temp_unsorted}"
+    sort_output "${temp_unsorted}" "${output_file}"
 }
 
-# Process GTF files without gene lines (e.g., RNAcentral)
+# Process GTF files without gene lines (e.g., RNAcentral): synthesize one
+# gene line per gene from the extent of its transcript lines.
 process_without_gene() {
     local input_file=$1
     local output_file=$2
     local attrs=$3
 
-    # Step 1: Collect gene information and save to temporary file
-    local temp_gene_file=$(mktemp)
-    awk -F'\t' '
-    BEGIN { OFS="\t" }
-    {
-        if ($3 != "transcript") next
-
-        # Parse attributes
-        attrs_str = $9
-        gene_id = ""
-        gene_biotype = ""
-        gene_name = ""
-
-        n = split(attrs_str, parts, ";")
-        for (i = 1; i <= n; i++) {
-            attr = parts[i]
-            gsub(/^[ \t]+|[ \t]+$/, "", attr)
-
-            if (attr ~ /^gene_id[ \t]+"/) {
-                match(attr, /gene_id[ \t]+"([^"]+)"/, m)
-                if (m[1] != "") gene_id = m[1]
-            } else if (attr ~ /^gene_biotype[ \t]+"/) {
-                match(attr, /gene_biotype[ \t]+"([^"]+)"/, m)
-                if (m[1] != "") gene_biotype = m[1]
-            } else if (attr ~ /^gene[ \t]+"/) {
-                match(attr, /gene[ \t]+"([^"]+)"/, m)
-                if (m[1] != "") gene_name = m[1]
-            }
-        }
-
-        # Collect gene information
-        if (gene_id != "") {
-            # Check if gene already exists
-            if (!(gene_id in gene_start)) {
-                gene_chrom[gene_id] = $1
-                gene_source[gene_id] = $2
-                gene_start[gene_id] = $4 + 0
-                gene_end[gene_id] = $5 + 0
-                gene_strand[gene_id] = $7
-                gene_biotype_val[gene_id] = gene_biotype
-                if (gene_name != "" && gene_name != gene_id) {
-                    gene_name_val[gene_id] = gene_name
-                }
-            } else {
-                # Update coordinate range
-                if ($4 + 0 < gene_start[gene_id]) gene_start[gene_id] = $4 + 0
-                if ($5 + 0 > gene_end[gene_id]) gene_end[gene_id] = $5 + 0
-                # Add gene_name if available and not present
-                if (gene_name != "" && gene_name != gene_id && !(gene_id in gene_name_val)) {
-                    gene_name_val[gene_id] = gene_name
-                }
-            }
-        }
+    local temp_unsorted prog
+    temp_unsorted=$(new_tmp)
+    prog=$(printf '%s\n%s\n' "${AWK_LIB}" 'BEGIN { init_attrs(attrs) }
+FNR == NR {
+    if ($3 != "transcript") next
+    parse_attrs()
+    if (gene_id == "") next
+    if (!(gene_id in gene_start)) {
+        gene_chrom[gene_id] = $1
+        gene_source[gene_id] = $2
+        gene_start[gene_id] = $4 + 0
+        gene_end[gene_id] = $5 + 0
+        gene_strand[gene_id] = $7
+    } else {
+        if ($4 + 0 < gene_start[gene_id]) gene_start[gene_id] = $4 + 0
+        if ($5 + 0 > gene_end[gene_id]) gene_end[gene_id] = $5 + 0
     }
-    END {
-        for (gene_id in gene_chrom) {
-            biotype = (gene_id in gene_biotype_val && gene_biotype_val[gene_id] != "") ? gene_biotype_val[gene_id] : "unknown"
-            gene_name = (gene_id in gene_name_val) ? gene_name_val[gene_id] : ""
-            print gene_chrom[gene_id], gene_source[gene_id], gene_start[gene_id], gene_end[gene_id], gene_strand[gene_id], gene_id, biotype, gene_name
-        }
-    }' "${input_file}" > "${temp_gene_file}"
+    if (gene_biotype != "" && !(gene_id in gene_biotypes)) gene_biotypes[gene_id] = gene_biotype
+    if (gene_name != "" && gene_name != gene_id && !(gene_id in gene_names)) gene_names[gene_id] = gene_name
+    if (transcript_id != "") transcript_to_gene[transcript_id] = gene_id
+    next
+}
+{
+    if ($3 !~ /^(transcript|exon|CDS|five_prime_utr|three_prime_utr|start_codon|stop_codon)$/) next
+    parse_attrs()
 
-    # Step 2: Output gene lines, then process transcript/exon lines, then sort
-    local temp_unsorted=$(mktemp)
-    {
-        # First output all gene lines (read from temp file and format)
-        awk -F'\t' -v attrs="${attrs}" '
-        BEGIN {
-            OFS="\t"
-            # Parse attribute list
-            n = split(attrs, attr_list, ",")
-            for (i = 1; i <= n; i++) {
-                wanted_attrs[attr_list[i]] = 1
-            }
-        }
-        {
-            chrom = $1
-            source = $2
-            start = $3
-            end = $4
-            strand = $5
-            gene_id = $6
-            biotype = $7
-            gene_name = $8
+    # gene line for this feature gene; only synthesizable when pass 1
+    # collected transcript-derived coordinates for it
+    g_id = (gene_id != "") ? gene_id : transcript_to_gene[transcript_id]
+    if (g_id != "" && (g_id in gene_chrom) && !(g_id in gene_emitted)) {
+        gene_emitted[g_id] = 1
+        g_biotype = (g_id in gene_biotypes) ? gene_biotypes[g_id] : "unknown"
+        g_name = (g_id in gene_names) ? gene_names[g_id] : ""
+        gene_id = g_id; gene_biotype = g_biotype; gene_name = g_name
+        print gene_chrom[g_id], gene_source[g_id], "gene", gene_start[g_id], gene_end[g_id], ".", gene_strand[g_id], ".", emit_attrs("gene")
+        parse_attrs()   # restore the per-line values clobbered above
+    }
+    if (gene_id == "" && transcript_id != "" && transcript_id in transcript_to_gene) {
+        gene_id = transcript_to_gene[transcript_id]
+    }
+    if (gene_biotype == "" && gene_id in gene_biotypes) gene_biotype = gene_biotypes[gene_id]
+    if (gene_name == "" && gene_id in gene_names) gene_name = gene_names[gene_id]
 
-            # Build gene line attributes
-            new_attrs = ""
-            sep = ""
+    print $1, $2, $3, $4, $5, $6, $7, $8, emit_attrs($3)
+}')
 
-            if (wanted_attrs["gene_id"]) {
-                new_attrs = sep "gene_id \"" gene_id "\""
-                sep = "; "
-            }
-            if (wanted_attrs["gene_name"] && gene_name != "") {
-                new_attrs = new_attrs "; gene_name \"" gene_name "\""
-            }
-            if (wanted_attrs["gene_biotype"] && biotype != "") {
-                new_attrs = new_attrs "; gene_biotype \"" biotype "\""
-            }
+    awk -F'\t' -v attrs="${attrs}" -v OFS='\t' "${prog}" \
+        "${input_file}" "${input_file}" > "${temp_unsorted}"
 
-            print chrom, source, "gene", start, end, ".", strand, ".", new_attrs
-        }' "${temp_gene_file}"
-
-        # Then process transcript and exon lines
-        awk -F'\t' -v attrs="${attrs}" '
-        BEGIN {
-            OFS="\t"
-            # Parse attribute list
-            n = split(attrs, attr_list, ",")
-            for (i = 1; i <= n; i++) {
-                wanted_attrs[attr_list[i]] = 1
-            }
-        }
-        {
-            if ($3 !~ /^(transcript|exon|CDS|five_prime_utr|three_prime_utr|start_codon|stop_codon)$/) next
-
-            attrs_str = $9
-            gene_id = ""
-            transcript_id = ""
-            gene_biotype = ""
-            exon_number = ""
-            gene_name = ""
-            protein_id = ""
-
-            # Parse attributes
-            n = split(attrs_str, parts, ";")
-            for (i = 1; i <= n; i++) {
-                attr = parts[i]
-                gsub(/^[ \t]+|[ \t]+$/, "", attr)
-
-                if (attr ~ /^gene_id[ \t]+"/) {
-                    match(attr, /gene_id[ \t]+"([^"]+)"/, m)
-                    if (m[1] != "") gene_id = m[1]
-                } else if (attr ~ /^transcript_id[ \t]+"/) {
-                    match(attr, /transcript_id[ \t]+"([^"]+)"/, m)
-                    if (m[1] != "") transcript_id = m[1]
-                } else if (attr ~ /^gene_biotype[ \t]+"/) {
-                    match(attr, /gene_biotype[ \t]+"([^"]+)"/, m)
-                    if (m[1] != "") gene_biotype = m[1]
-                } else if (attr ~ /^gene[ \t]+"/) {
-                    match(attr, /gene[ \t]+"([^"]+)"/, m)
-                    if (m[1] != "") gene_name = m[1]
-                } else if (attr ~ /^exon_number[ \t]+/) {
-                    if (attr ~ /^exon_number[ \t]+"/) {
-                        match(attr, /exon_number[ \t]+"([^"]+)"/, m)
-                        if (m[1] != "") exon_number = m[1]
-                    } else {
-                        match(attr, /exon_number[ \t]+([^; \t]+)/, m)
-                        if (m[1] != "") exon_number = m[1]
-                    }
-                } else if (attr ~ /^protein_id[ \t]+"/) {
-                    match(attr, /protein_id[ \t]+"([^"]+)"/, m)
-                    if (m[1] != "") protein_id = m[1]
-                }
-            }
-
-            # Store transcript to gene mapping and biotype
-            if ($3 == "transcript") {
-                if (gene_id != "" && gene_biotype != "") {
-                    gene_biotypes[gene_id] = gene_biotype
-                }
-                if (transcript_id != "" && gene_id != "") {
-                    transcript_to_gene[transcript_id] = gene_id
-                }
-            }
-
-            # Exon lines need to find gene_id through transcript_id
-            if ($3 == "exon" && transcript_id != "" && transcript_id in transcript_to_gene) {
-                gene_id = transcript_to_gene[transcript_id]
-            }
-
-            # Get gene biotype
-            if (gene_id != "" && gene_id in gene_biotypes) {
-                gene_biotype = gene_biotypes[gene_id]
-            }
-
-            # Get gene name
-            if (gene_name == "" && gene_id in gene_names) {
-                gene_name = gene_names[gene_id]
-            }
-
-            # Build new attribute string
-            new_attrs = ""
-            sep = ""
-
-            if (wanted_attrs["gene_id"] && gene_id != "") {
-                new_attrs = sep "gene_id \"" gene_id "\""
-                sep = "; "
-            }
-            if (wanted_attrs["gene_name"] && gene_name != "" && gene_name != gene_id) {
-                new_attrs = new_attrs "; gene_name \"" gene_name "\""
-            }
-            if (wanted_attrs["transcript_id"] && ($3 == "transcript" || $3 == "exon" || $3 == "CDS" || $3 == "five_prime_utr" || $3 == "three_prime_utr" || $3 == "start_codon" || $3 == "stop_codon") && transcript_id != "") {
-                new_attrs = new_attrs "; transcript_id \"" transcript_id "\""
-            }
-            if (wanted_attrs["exon_number"] && ($3 == "exon" || $3 == "CDS" || $3 == "five_prime_utr" || $3 == "three_prime_utr" || $3 == "start_codon" || $3 == "stop_codon") && exon_number != "") {
-                new_attrs = new_attrs "; exon_number \"" exon_number "\""
-            }
-            if (wanted_attrs["protein_id"] && ($3 == "CDS" || $3 == "start_codon" || $3 == "stop_codon") && protein_id != "") {
-                new_attrs = new_attrs "; protein_id \"" protein_id "\""
-            }
-            if (wanted_attrs["gene_biotype"] && gene_biotype != "") {
-                new_attrs = new_attrs "; gene_biotype \"" gene_biotype "\""
-            }
-
-            print $1,$2,$3,$4,$5,$6,$7,$8,new_attrs
-        }' "${input_file}"
-    } > "${temp_unsorted}"
-
-    # Step 3: Sort by genomic coordinates
-    sort -k1,1 -k4,4n -k5,5n "${temp_unsorted}" > "${output_file}"
-
-    # Clean up temporary files
-    rm -f "${temp_gene_file}" "${temp_unsorted}"
-
-    # Clean up temporary file
-    rm -f "${temp_gene_file}"
+    sort_output "${temp_unsorted}" "${output_file}"
 }
 
 # Validate output file
 validate_output() {
+    local input_file=$1
     local output_file=$2
-    local input_lines=$(wc -l < "${input_file}")
-    local output_lines=$(wc -l < "${output_file}")
+    local input_lines output_lines with_biotype missing_biotype
+
+    input_lines=$(wc -l < "${input_file}")
+    output_lines=$(wc -l < "${output_file}")
 
     log_verbose "Input file lines: ${input_lines}"
     log_verbose "Output file lines: ${output_lines}"
 
-    # Check gene_biotype - use grep -c to count
-    local total_lines=$(wc -l < "${output_file}")
-    local with_biotype=$(grep -c "gene_biotype" "${output_file}" || echo "0")
-    local missing_biotype=$((total_lines - with_biotype))
+    with_biotype=$(grep -c "gene_biotype" "${output_file}" || true)
+    missing_biotype=$((output_lines - with_biotype))
 
     if [[ "${missing_biotype}" -gt 0 ]]; then
         log_warn "${missing_biotype} lines missing gene_biotype"
@@ -561,7 +424,7 @@ main() {
                 ;;
             *)
                 log_error "Unknown option: $1"
-                echo "Use -h/--help to see help information"
+                echo "Use -h/--help to see help information" >&2
                 exit 1
                 ;;
         esac
@@ -570,9 +433,22 @@ main() {
     # Check required parameters
     if [[ -z "${input_file}" ]]; then
         log_error "Missing required parameter: -i/--input"
-        echo "Use -h/--help to see help information"
+        echo "Use -h/--help to see help information" >&2
         exit 1
     fi
+
+    # Reject unknown attribute keys early (they would be silently dropped)
+    IFS=',' read -r -a attr_items <<< "${attrs}"
+    for item in "${attr_items[@]}"; do
+        valid=false
+        for known in ${KNOWN_ATTRS}; do
+            if [[ "${item}" == "${known}" ]]; then valid=true; break; fi
+        done
+        if [[ "${valid}" != "true" ]]; then
+            log_error "Unknown attribute in --attrs: ${item}. Valid: ${KNOWN_ATTRS// /, }"
+            exit 1
+        fi
+    done
 
     # Check dependencies
     check_dependencies
@@ -595,7 +471,8 @@ main() {
     log_verbose "Attributes to keep: ${attrs}"
 
     # Detect file type and process
-    local file_type=$(detect_gene_lines "${input_file}")
+    local file_type
+    file_type=$(detect_gene_lines "${input_file}")
     log_verbose "Detected file type: ${file_type}"
 
     if [[ "${file_type}" == "with_gene" ]]; then
