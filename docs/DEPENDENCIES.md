@@ -36,7 +36,7 @@ Legend: **Tools** = external executables · **Py** = Python packages (import nam
 | `bed12_effective_length.py` | — | — |
 | `fasta_to_alphafold_json.py` | — | — |
 
-> **Note (this machine):** `gtf2bed`/`gff2bed` are pinned in `config/env.local.sh`. The kent utilities `gff2gtf`, `gtfToGenePred`, `gff3ToGenePred`, `genePredToBed` are **not installed** — the `gff2gtf`, `gtf2gp`, `gp2bed` modes of `genome_format_converter.sh` are unavailable until they are provided (install kent-utils, then pass paths via the script's own options).
+> **Note (this machine):** `gtf2bed`/`gff2bed` (bedops) are pinned in `config/env.local.sh`. The UCSC kent utilities (`gtfToGenePred`, `gff3ToGenePred`, `genePredToGtf`, `genePredToBed`) live in `~/soft/ucsc-tools` and are on PATH via `~/soft/bin` symlinks, so all five conversion modes are usable; each tool can also be pinned per-path with the script's own `--xxx` options or `BUC_<TOOL>_BIN` slots.
 
 ## Data Processing
 
