@@ -5,12 +5,45 @@
 # Description: Calculate dN/dS ratios for all species pairs from
 #              multi-species aligned DNA FASTA files.
 # Created Time: 2026
+#
+# Changelog:
+#   v1.1.0  2026-09-26
+#   - FIX: identical sequences wrote ratio "Inf" (dn=ds=0); they now
+#     write "NA".
+#   - FIX: skipped pairs (protein length mismatch after stop-codon
+#     truncation, translation errors) were logged at DEBUG and silently
+#     missing from the table; they are now reported at INFO level and
+#     counted, with a per-run summary.
+#   - FIX: duplicate sequence IDs in one file silently overwrote each
+#     other; a warning is emitted.
+#   - DOC: the metric is documented as a crude per-codon difference
+#     ratio (counts of differing codons classified by amino-acid
+#     effect). It is NOT a Nei-Gojobori-style dN/dS estimate: there are
+#     no synonymous/non-synonymous site denominators, no multi-base
+#     codon-path decomposition, and no substitution-model correction.
+#     Values close to 1.0 for divergent pairs are expected with this
+#     method and do not mean neutral evolution.
 #########################################################################
-"""Calculate dN/dS ratios for all species pairs from aligned DNA FASTA.
+"""Calculate dN/dS-style ratios for all species pairs from aligned DNA FASTA.
 
-Processes directory of .dna.fa files, each containing aligned CDS from
-multiple species. Computes dN (non-synonymous) and dS (synonymous)
-substitutions for every species pair and outputs a summary TSV.
+Processes a directory of ``*.dna.fa`` files, each containing aligned CDS
+from multiple species. For every species pair, codons are compared
+column-wise and classified by amino-acid effect:
+
+- dN = number of differing codons that change the amino acid
+- dS = number of differing codons that keep the amino acid
+- ratio = dN / dS
+
+IMPORTANT — semantics of this metric: this is a *per-codon difference
+ratio*, not a substitution-based dN/dS estimate. It has no synonymous/
+non-synonymous site denominators, no multi-base pathway decomposition,
+and no correction for multiple substitutions at the same site. It is a
+quick screen, not a selection test; use PAML/HyPhy for inference.
+
+Edge cases: identical pairs report ratio NA; pairs where every codon
+difference is non-synonymous report Inf; pairs whose translated
+proteins differ in length (e.g. internal stop codons) are skipped and
+reported; a trailing partial codon is ignored.
 
 Requires: biopython
 """
@@ -22,38 +55,41 @@ import sys
 from itertools import combinations
 from pathlib import Path
 
-__version__ = "1.0.0"
+from Bio.Data.CodonTable import standard_dna_table
+from Bio.Seq import Seq
+from Bio.SeqIO import parse as seqio_parse
+
+__version__ = "1.1.0"
 
 
 def calculate_dn_ds(dna_seq1: str, dna_seq2: str) -> tuple:
-    """Calculate dN and dS between two aligned DNA sequences.
-
-    Counts codon positions where the two sequences differ:
-    - dN: codon change produces a different amino acid (non-synonymous)
-    - dS: codon change produces the same amino acid (synonymous)
+    """Count synonymous/non-synonymous codon differences between two
+    aligned DNA sequences.
 
     Args:
-        dna_seq1: First DNA sequence string.
+        dna_seq1: First DNA sequence string (aligned, may contain gaps).
         dna_seq2: Second DNA sequence string.
 
     Returns:
-        Tuple of (dN, dS, dN/dS ratio).
-    """
-    from Bio.Data.CodonTable import standard_dna_table
+        Tuple of (dN, dS, dN/dS ratio). ratio is float("inf") when
+        dS == 0 and dN > 0, and None when both are 0 (identical
+        sequences).
 
+    Raises:
+        ValueError: if the sequences have different lengths.
+    """
     if len(dna_seq1) != len(dna_seq2):
         raise ValueError("Sequences have different lengths.")
-
-    codons1 = [dna_seq1[i:i + 3] for i in range(0, len(dna_seq1), 3)]
-    codons2 = [dna_seq2[i:i + 3] for i in range(0, len(dna_seq2), 3)]
 
     dn = 0
     ds = 0
 
-    for codon1, codon2 in zip(codons1, codons2):
+    for i in range(0, len(dna_seq1) - len(dna_seq1) % 3, 3):
+        codon1 = dna_seq1[i:i + 3]
+        codon2 = dna_seq2[i:i + 3]
         if codon1 == codon2:
             continue
-        if "-" in codon1 or "-" in codon2 or len(codon1) != 3 or len(codon2) != 3:
+        if "-" in codon1 or "-" in codon2:
             continue
 
         aa1 = standard_dna_table.forward_table.get(codon1)
@@ -66,41 +102,56 @@ def calculate_dn_ds(dna_seq1: str, dna_seq2: str) -> tuple:
         else:
             dn += 1
 
-    ratio = dn / ds if ds > 0 else float("inf")
+    if ds > 0:
+        ratio = dn / ds
+    elif dn > 0:
+        ratio = float("inf")
+    else:
+        ratio = None
     return dn, ds, ratio
 
 
-def process_file(dna_file: str) -> list:
+def process_file(dna_file: str) -> tuple:
     """Process a single multi-species DNA FASTA file.
 
     Args:
         dna_file: Path to DNA FASTA file with aligned sequences.
 
     Returns:
-        List of result tuples (sp1, sp2, dN, dS, dN/dS).
+        Tuple of (results, n_skipped): results a list of
+        (sp1, sp2, dN, dS, dN/dS or None), n_skipped the number of
+        pairs skipped for protein-length mismatch or translation
+        errors.
     """
-    from Bio.SeqIO import parse as seqio_parse
+    records = {}
+    for rec in seqio_parse(dna_file, "fasta"):
+        if rec.id in records:
+            logging.warning("Duplicate sequence ID %r in %s; keeping the last.", rec.id, dna_file)
+        records[rec.id] = str(rec.seq).upper()
 
-    records = {rec.id: str(rec.seq).upper() for rec in seqio_parse(dna_file, "fasta")}
     results = []
+    n_skipped = 0
 
     for sp1, sp2 in combinations(records.keys(), 2):
         seq1 = records[sp1]
         seq2 = records[sp2]
 
-        # Validate: translate and check length consistency
-        from Bio.Seq import Seq
+        # Translate (gap-free) and compare protein lengths; internal stop
+        # codons truncate the translation, so pseudogeneized copies fail
+        # this check and are skipped.
         try:
             prot1 = Seq(seq1.replace("-", "")).translate(to_stop=True)
             prot2 = Seq(seq2.replace("-", "")).translate(to_stop=True)
-            if len(prot1) != len(prot2):
-                logging.debug(
-                    "Protein length mismatch for %s vs %s (%d vs %d), skipping.",
-                    sp1, sp2, len(prot1), len(prot2),
-                )
-                continue
         except Exception as e:
             logging.warning("Translation error for %s/%s: %s", sp1, sp2, e)
+            n_skipped += 1
+            continue
+        if len(prot1) != len(prot2):
+            logging.info(
+                "Protein length mismatch for %s vs %s (%d vs %d aa), skipping pair.",
+                sp1, sp2, len(prot1), len(prot2),
+            )
+            n_skipped += 1
             continue
 
         try:
@@ -108,8 +159,9 @@ def process_file(dna_file: str) -> list:
             results.append((sp1, sp2, dn, ds, ratio))
         except ValueError as e:
             logging.warning("dN/dS failed for %s/%s: %s", sp1, sp2, e)
+            n_skipped += 1
 
-    return results
+    return results, n_skipped
 
 
 def batch_process(input_dir: str, output_file: str, suffix: str = ".dna.fa") -> None:
@@ -127,33 +179,51 @@ def batch_process(input_dir: str, output_file: str, suffix: str = ".dna.fa") -> 
 
     logging.info("Processing %d files.", len(files))
 
+    total_pairs = 0
+    total_skipped = 0
     with open(output_file, "w") as fh:
         fh.write("Gene\tSpecies1\tSpecies2\tdN\tdS\tdN_dS\n")
 
-        total_pairs = 0
         for fname in files:
             fpath = os.path.join(input_dir, fname)
-            gene_name = os.path.splitext(fname)[0]
+            # Strip the full suffix ("g1.dna.fa" -> "g1", not "g1.dna").
+            gene_name = fname[: -len(suffix)] if suffix and fname.endswith(suffix) else os.path.splitext(fname)[0]
             logging.info("Processing: %s", fname)
 
-            results = process_file(fpath)
+            results, n_skipped = process_file(fpath)
+            total_skipped += n_skipped
             for sp1, sp2, dn, ds, ratio in results:
-                ratio_str = f"{ratio:.4f}" if ratio != float("inf") else "Inf"
+                if ratio is None:
+                    ratio_str = "NA"
+                elif ratio == float("inf"):
+                    ratio_str = "Inf"
+                else:
+                    ratio_str = f"{ratio:.4f}"
                 fh.write(f"{gene_name}\t{sp1}\t{sp2}\t{dn}\t{ds}\t{ratio_str}\n")
             total_pairs += len(results)
 
+    if total_skipped:
+        logging.info("Skipped %d pairs (protein length mismatch or translation error).", total_skipped)
     logging.info("Completed: %d pairs -> %s", total_pairs, output_file)
 
 
 def build_parser() -> argparse.ArgumentParser:
     """Build argument parser."""
     parser = argparse.ArgumentParser(
-        description="Calculate dN/dS ratios for all species pairs from aligned DNA FASTA files.",
+        description="Calculate dN/dS-style ratios for all species pairs from aligned DNA FASTA files.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 examples:
   python calculate_dnds.py -i gene_alignments/ -o dnds_results.tsv
   python calculate_dnds.py -i gene_alignments/ -o dnds_results.tsv --suffix .fa
+
+notes:
+  The ratio is a per-codon difference ratio (differing-codon counts by
+  amino-acid effect), NOT a substitution-model dN/dS estimate: values
+  near 1.0 for divergent pairs are expected with this method and do not
+  indicate neutral evolution. Use PAML/HyPhy for selection inference.
+  Identical pairs report NA; pairs with protein-length mismatches (e.g.
+  internal stops) are skipped and reported.
 """,
     )
     parser.add_argument("-i", "--input", type=str, required=True, help="Input directory with multi-species DNA FASTA files.")
