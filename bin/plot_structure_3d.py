@@ -5,9 +5,28 @@ using DSSP and matplotlib.
 
 Author: ChengYu
 Created Time: 2026
+
+Changelog:
+  v1.1.0  2026-09-27
+  - FIX: residues were keyed by residue number only, so multi-chain
+    structures lost every same-numbered residue across chains and the
+    backbone trace zig-zagged between chains; keys now include the chain.
+  - FIX: residue coordinates came from the first ATOM record (usually N);
+    CA coordinates are now preferred when present.
+  - FIX: HETATM records (waters, ligands, ions) were plotted as residues;
+    only ATOM records are parsed now.
+  - FIX: the DSSP assignment map was keyed by residue number only and
+    collided across chains; keyed by (chain, residue number) now.
+  - FIX: 'ss' mode with DSSP missing produced an all-gray plot with only
+    a warning; DSSP is now required for ss mode (hard error), and any
+    per-file failure makes the batch exit non-zero.
+  - FIX: DSSP detection honours $BUC_MKDSSP_BIN; unknown residues warn
+    instead of silently scoring 0.0 hydropathy.
+  - DOC: help no longer claims CIF support (fixed-column PDB parsing only).
+  - CLEAN: dead Path/Tuple imports removed.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import argparse
 import glob
@@ -17,9 +36,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -64,12 +84,18 @@ AA3TO1: Dict[str, str] = {
 def parse_pdb(filepath: str) -> List[Dict[str, Any]]:
     """Extract per-residue coordinate and metadata from a PDB file.
 
-    Returns a list of dicts with keys: resnum, resn, x, y, z.
+    Only ATOM records are parsed (HETATM waters/ligands/ions would pollute
+    the plot). Residues are keyed by (chain, residue number) so multi-chain
+    structures keep their same-numbered residues; CA coordinates are
+    preferred over the first backbone atom of the residue.
+
+    Returns a list of dicts with keys: chain, resnum, resn, x, y, z,
+    sorted by (chain, residue number).
     """
-    residues: Dict[int, Dict[str, Any]] = {}
+    residues: Dict[Any, Dict[str, Any]] = {}
     with open(filepath) as fh:
         for line in fh:
-            if not line.startswith(("ATOM", "HETATM")):
+            if not line.startswith("ATOM"):
                 continue
             resn = line[17:20].strip()
             chain = line[21].strip()
@@ -77,9 +103,19 @@ def parse_pdb(filepath: str) -> List[Dict[str, Any]]:
             x = float(line[30:38].strip())
             y = float(line[38:46].strip())
             z = float(line[46:54].strip())
-            if resnum not in residues:
-                residues[resnum] = {"resnum": resnum, "resn": resn, "chain": chain, "x": x, "y": y, "z": z}
-    return sorted(residues.values(), key=lambda r: r["resnum"])
+            atom_name = line[12:16].strip()
+            key = (chain, resnum)
+            if key not in residues:
+                residues[key] = {
+                    "chain": chain, "resnum": resnum, "resn": resn,
+                    "x": x, "y": y, "z": z, "is_ca": atom_name == "CA",
+                }
+            elif atom_name == "CA" and not residues[key]["is_ca"]:
+                residues[key].update({"x": x, "y": y, "z": z, "is_ca": True})
+    parsed = list(residues.values())
+    for r in parsed:
+        r.pop("is_ca", None)
+    return sorted(parsed, key=lambda r: (r["chain"], r["resnum"]))
 
 
 # -----------------------------------------------------------------------
@@ -87,7 +123,10 @@ def parse_pdb(filepath: str) -> List[Dict[str, Any]]:
 # -----------------------------------------------------------------------
 
 def detect_dssp() -> str:
-    """Try to locate the DSSP executable."""
+    """Locate the DSSP executable ($BUC_MKDSSP_BIN first, then PATH)."""
+    env_path = os.environ.get("BUC_MKDSSP_BIN", "")
+    if env_path and os.path.isfile(env_path) and os.access(env_path, os.X_OK):
+        return env_path
     for name in ("mkdssp", "dssp"):
         path = shutil.which(name)
         if path:
@@ -95,8 +134,8 @@ def detect_dssp() -> str:
     return ""
 
 
-def run_dssp(pdb_path: str, dssp_bin: str) -> Dict[int, str]:
-    """Run DSSP on a PDB file and return {resnum: ss_code}."""
+def run_dssp(pdb_path: str, dssp_bin: str) -> Dict[Any, str]:
+    """Run DSSP on a PDB file and return {(chain, resnum): ss_code}."""
     fd, tmp_out = tempfile.mkstemp(suffix=".dssp")
     try:
         os.close(fd)
@@ -104,7 +143,7 @@ def run_dssp(pdb_path: str, dssp_bin: str) -> Dict[int, str]:
             [dssp_bin, "--output-format", "dssp", pdb_path, tmp_out],
             check=True, capture_output=True,
         )
-        ss_map: Dict[int, str] = {}
+        ss_map: Dict[Any, str] = {}
         with open(tmp_out) as fh:
             started = False
             for line in fh:
@@ -116,8 +155,9 @@ def run_dssp(pdb_path: str, dssp_bin: str) -> Dict[int, str]:
                 aa = line[13].strip()
                 if aa == "!" or not aa:
                     continue
+                chain = line[11].strip()
                 resnum = int(line[5:10].strip())
-                ss_map[resnum] = line[16].strip()
+                ss_map[(chain, resnum)] = line[16].strip()
         return ss_map
     finally:
         os.unlink(tmp_out)
@@ -161,7 +201,13 @@ def plot_structure(
     ax.plot(xs, ys, zs, color="gray", linewidth=0.8, alpha=0.5)
 
     if color_mode == "hydro":
-        values = [HYDROPATHY.get(r["resn"], 0.0) for r in residues]
+        values = []
+        warned = set()
+        for r in residues:
+            if r["resn"] not in HYDROPATHY and r["resn"] not in warned:
+                warned.add(r["resn"])
+                logger.warning("Unknown residue '%s' scored as hydropathy 0.0", r["resn"])
+            values.append(HYDROPATHY.get(r["resn"], 0.0))
         vmin, vmax = -4.5, 4.5
         cmap = plt.cm.coolwarm
         sc = ax.scatter(xs, ys, zs, c=values, cmap=cmap, vmin=vmin, vmax=vmax, s=20)
@@ -169,7 +215,7 @@ def plot_structure(
     else:
         colors = []
         for r in residues:
-            ss_code = ss_map.get(r["resnum"], " ")
+            ss_code = ss_map.get((r["chain"], r["resnum"]), " ")
             label = SS_MAP.get(ss_code, "Coil")
             colors.append(SS_COLORS.get(label, "#BFBFBF"))
         ax.scatter(xs, ys, zs, c=colors, s=20)
@@ -199,35 +245,42 @@ def process_files(
     height: int,
     dpi: int,
     pattern: str,
-) -> None:
+) -> int:
+    """Render every matching structure; returns the number of failures."""
     os.makedirs(output_folder, exist_ok=True)
     pdb_files = sorted(glob.glob(os.path.join(input_folder, pattern)))
     if not pdb_files:
         logger.error("No structure files found in %s", input_folder)
         sys.exit(1)
 
+    n_failed = 0
     for pdb_file in pdb_files:
         name = os.path.splitext(os.path.basename(pdb_file))[0]
         try:
             residues = parse_pdb(pdb_file)
             if not residues:
-                logger.warning("No residues parsed from %s", pdb_file)
+                logger.error("No residues parsed from %s", pdb_file)
+                n_failed += 1
                 continue
 
-            ss_map: Dict[int, str] = {}
-            if dssp_bin and color_mode == "ss":
+            ss_map: Dict[Any, str] = {}
+            if color_mode == "ss":
                 try:
                     ss_map = run_dssp(pdb_file, dssp_bin)
                 except Exception as exc:
-                    logger.warning("DSSP failed for %s: %s", pdb_file, exc)
+                    logger.error("DSSP failed for %s: %s", pdb_file, exc)
+                    n_failed += 1
+                    continue
 
             out_path = os.path.join(output_folder, f"{name}.png")
             plot_structure(residues, ss_map, out_path, color_mode, width, height, dpi)
 
         except Exception as exc:
             logger.error("Error processing %s: %s", pdb_file, exc)
+            n_failed += 1
 
     logger.info("Batch rendering complete. Output in: %s", output_folder)
+    return n_failed
 
 
 # -----------------------------------------------------------------------
@@ -253,7 +306,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Set the logging level (default: INFO).",
     )
-    parser.add_argument("-i", "--input", required=True, help="Input folder with PDB/CIF files.")
+    parser.add_argument("-i", "--input", required=True,
+                        help="Input folder with PDB files (fixed-column parsing; CIF is not supported).")
     parser.add_argument("-o", "--output", default="structure_images", help="Output folder for PNG images.")
     parser.add_argument(
         "--dssp", default=None,
@@ -281,15 +335,19 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     dssp_bin = args.dssp or detect_dssp()
     if args.color == "ss" and not dssp_bin:
-        logger.warning(
-            "DSSP not found. Secondary-structure coloring may not work. "
-            "Install DSSP or supply --dssp <path>."
+        logger.error(
+            "DSSP is required for --color ss but was not found. "
+            "Install mkdssp, set BUC_MKDSSP_BIN, or supply --dssp <path>."
         )
+        sys.exit(1)
 
-    process_files(
+    n_failed = process_files(
         args.input, args.output, dssp_bin, args.color,
         args.width, args.height, args.dpi, args.pattern,
     )
+    if n_failed:
+        logger.error("%d structure file(s) failed to render.", n_failed)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
