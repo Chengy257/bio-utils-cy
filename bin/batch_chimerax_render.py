@@ -4,9 +4,25 @@ Batch render PDB files using ChimeraX command scripting.
 
 Author: ChengYu
 Created Time: 2026
+
+Changelog:
+  v1.1.0  2026-09-27
+  - FIX: 'color ss' is not a valid ChimeraX command (no such built-in
+    scheme); the ss scheme now colors helices/sheets explicitly via
+    documented selectors ('color helix ... target c').
+  - FIX: the bfactor scheme now uses 'palette alphafold' (the documented
+    pLDDT palette 0/50/70/90/100) instead of the generic blue-white-red
+    attribute default, matching the AlphaFold purpose of this tool.
+  - FIX: .cxc paths are quoted, so files/directories with spaces work.
+  - FIX: ChimeraX return code 0 was trusted blindly; expected PNGs are now
+    verified to exist and be non-empty, and any missing one fails the run
+    (exit 1) with the list of failures.
+  - FIX: a BUC_CHIMERAX_BIN that is set but not executable now errors out
+    instead of silently falling back to PATH.
+  - CLEAN: dead Path import removed.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import argparse
 import glob
@@ -16,17 +32,25 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
 
 def detect_chimerax() -> str:
-    """Locate the ChimeraX executable: BUC_CHIMERAX_BIN (config/env.sh) first, then PATH."""
+    """Locate the ChimeraX executable: BUC_CHIMERAX_BIN (config/env.sh) first, then PATH.
+
+    Raises SystemExit when BUC_CHIMERAX_BIN is set but not executable.
+    """
     env_path = os.environ.get("BUC_CHIMERAX_BIN", "")
-    if env_path and os.path.isfile(env_path) and os.access(env_path, os.X_OK):
-        return env_path
+    if env_path:
+        if os.path.isfile(env_path) and os.access(env_path, os.X_OK):
+            return env_path
+        logger.error(
+            "BUC_CHIMERAX_BIN is set but not an executable file: %s "
+            "(check config/env.local.sh)", env_path,
+        )
+        sys.exit(1)
     for name in ("chimerax", "ChimeraX"):
         path = shutil.which(name)
         if path:
@@ -71,16 +95,20 @@ def build_chimerax_script(
         out_path = os.path.join(output_folder, f"{pdb_name}.png")
 
         lines.append(f"# --- {pdb_name} ---")
-        lines.append(f"open {pdb_file}")
+        lines.append(f'open "{pdb_file}"')
         lines.append("hide atoms")
         lines.append("show cartoons")
 
         if color_scheme == "bychain":
             lines.append("color bychain")
         elif color_scheme == "bfactor":
-            lines.append("color byattribute bfactor")
+            # 'alphafold' is the documented pLDDT palette (0/50/70/90/100)
+            lines.append("color byattribute bfactor palette alphafold")
         elif color_scheme == "ss":
-            lines.append("color ss")
+            # 'color ss' does not exist in ChimeraX; color the cartoon by
+            # documented secondary-structure selectors instead
+            lines.append("color helix tan target c")
+            lines.append("color sheet gold target c")
         elif color_scheme == "rainbow":
             lines.append("rainbow chain")
         else:
@@ -88,7 +116,7 @@ def build_chimerax_script(
 
         lines.append("view")
         lines.append("lighting soft")
-        lines.append(f"save {out_path} width {width} height {height} supersample 2")
+        lines.append(f'save "{out_path}" width {width} height {height} supersample 2')
         lines.append("close all")
         lines.append("")
 
@@ -135,6 +163,20 @@ def batch_render(
             logger.error("ChimeraX stderr:\n%s", result.stderr)
             sys.exit(1)
 
+        # ChimeraX may exit 0 even when individual commands failed: verify
+        # that every expected PNG was actually produced.
+        expected = [
+            os.path.join(out_abs, f"{os.path.splitext(os.path.basename(p))[0]}.png")
+            for p in pdb_abs
+        ]
+        missing = [f for f in expected if not (os.path.isfile(f) and os.path.getsize(f) > 0)]
+        if missing:
+            logger.error("%d of %d PNGs missing or empty:\n  %s",
+                         len(missing), len(expected), "\n  ".join(missing))
+            if result.stderr:
+                logger.error("ChimeraX stderr:\n%s", result.stderr)
+            sys.exit(1)
+
         logger.info("ChimeraX rendering complete. Output in: %s", output_folder)
 
     finally:
@@ -175,7 +217,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--color", default="bychain",
         choices=["bychain", "bfactor", "ss", "rainbow"],
-        help="Coloring scheme (default: bychain).",
+        help="Coloring scheme (default: bychain). 'bfactor' uses the "
+             "AlphaFold pLDDT palette; 'ss' colors helices/sheets on the cartoon.",
     )
     parser.add_argument("--pattern", default="*.pdb", help="Glob pattern for PDB files (default: '*.pdb').")
     return parser
