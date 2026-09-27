@@ -6,6 +6,21 @@ Description: Fetch SRA metadata from ENA filereport API.
              Accepts a list of SRA accessions (SRR/ERR/DRR) and retrieves
              specified fields from the ENA API, outputting a merged TSV.
 Created Time: 2026
+
+Changelog:
+  v1.1.0  2026-09-27
+  - FIX: HTTP 404 silently dropped the whole batch (up to 500 accessions)
+    with a single warning; 404 batches are now bisected to isolate the
+    unknown accession(s), and every failed accession is recorded to
+    <output>.failed.txt
+  - FIX: ENA error bodies (HTTP 200, non-TSV text) were parsed into
+    garbage rows; they are now detected and the batch recorded as failed
+  - FIX: the TSV header was taken from the first batch only -- later
+    batches with a different column set crashed DictWriter; fieldnames
+    are now the union across all batches
+  - FIX: input accessions are deduplicated; non-run accessions warned
+  - FIX: any failed accession makes the script exit non-zero (the merged
+    TSV would otherwise be silently incomplete)
 """
 
 from __future__ import annotations
@@ -13,15 +28,16 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
+import re
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 ENA_FILEREPORT_BASE_URL = "https://www.ebi.ac.uk/ena/portal/api/filereport"
 
@@ -34,9 +50,16 @@ DEFAULT_FIELDS = (
 
 DEFAULT_TIMEOUT = 60
 DEFAULT_DELAY = 0.5
+DEFAULT_BACKOFF = 2.0
 MAX_ACCESSIONS_PER_REQUEST = 500
 
+_RUN_ACC_RE = re.compile(r"^[SED]RR\d+$")
+
 logger = logging.getLogger(__name__)
+
+
+class EnaNotFoundError(RuntimeError):
+    """HTTP 404 from the ENA API: at least one accession in the batch is unknown."""
 
 
 def build_url(accessions: List[str], fields: str) -> str:
@@ -88,10 +111,14 @@ def fetch_tsv(
                 charset = resp.headers.get_content_charset() or "utf-8"
                 return resp.read().decode(charset)
         except HTTPError as exc:
-            last_exception = exc
             if exc.code == 404:
-                logger.warning("HTTP 404 for URL: %s", url)
-                return ""
+                # Deterministic: at least one accession in the batch does
+                # not exist. The caller bisects to isolate it -- retrying
+                # or returning "" would silently drop the whole batch.
+                raise EnaNotFoundError(
+                    f"HTTP 404 from ENA (unknown accession in batch): {url}"
+                ) from exc
+            last_exception = exc
             logger.warning(
                 "HTTPError %s on attempt %d/%d: %s", exc.code, attempt, retries, exc
             )
@@ -119,20 +146,28 @@ def fetch_tsv(
 def read_accessions(path: str) -> List[str]:
     """Read accessions from a file, one per line.
 
-    Blank lines and lines starting with '#' are skipped.
+    Blank lines and lines starting with '#' are skipped; duplicates are
+    removed (order preserved); tokens that do not look like run accessions
+    are kept but warned about.
 
     Args:
         path: Path to the input file.
 
     Returns:
-        List of stripped accession strings.
+        List of stripped, de-duplicated accession strings.
     """
     accessions: List[str] = []
     with open(path, "r", encoding="utf-8") as fh:
         for line in fh:
             acc = line.strip()
-            if acc and not acc.startswith("#"):
+            if acc and not acc.startswith("#") and acc not in accessions:
                 accessions.append(acc)
+    for acc in accessions:
+        if not _RUN_ACC_RE.match(acc):
+            logger.warning(
+                "'%s' does not look like a run accession (SRR/ERR/DRR + digits)",
+                acc,
+            )
     logger.info("Read %d accessions from %s", len(accessions), path)
     return accessions
 
@@ -157,13 +192,68 @@ def parse_tsv_text(text: str) -> List[dict]:
         text: Raw TSV text with a header row.
 
     Returns:
-        List of dicts keyed by the header column names.
+        List of dicts keyed by the header column names (a possible
+        DictReader restkey from ragged rows is dropped).
     """
     rows: List[dict] = []
     reader = csv.DictReader(text.splitlines(), delimiter="\t")
     for row in reader:
-        rows.append(dict(row))
+        rows.append({k: v for k, v in row.items() if k is not None})
     return rows
+
+
+def fetch_chunk_rows(
+    chunk: List[str],
+    fields: str,
+    timeout: int,
+    retries: int,
+    failed: List[str],
+    backoff: float = DEFAULT_BACKOFF,
+) -> List[dict]:
+    """Fetch one batch of accessions; on 404, bisect to isolate unknown ones.
+
+    Args:
+        chunk: Accessions in this batch.
+        fields: Comma-separated ENA field names.
+        timeout: HTTP timeout per request.
+        retries: Retry attempts per request.
+        failed: List to append accessions that could not be retrieved.
+        backoff: Retry backoff multiplier.
+
+    Returns:
+        Rows for the accessions that were found.
+    """
+    url = build_url(chunk, fields)
+    try:
+        text = fetch_tsv(url, timeout=timeout, retries=retries, backoff=backoff)
+    except EnaNotFoundError:
+        if len(chunk) == 1:
+            logger.warning("Accession %s not found in ENA; recorded as failed.", chunk[0])
+            failed.append(chunk[0])
+            return []
+        mid = len(chunk) // 2
+        logger.info("404 for batch of %d; splitting to isolate unknown accession(s).", len(chunk))
+        return (
+            fetch_chunk_rows(chunk[:mid], fields, timeout, retries, failed, backoff)
+            + fetch_chunk_rows(chunk[mid:], fields, timeout, retries, failed, backoff)
+        )
+
+    if not text.strip():
+        logger.warning("Batch of %d returned an empty response; recorded as failed.", len(chunk))
+        failed.extend(chunk)
+        return []
+
+    # ENA reports problems (e.g. invalid field names) as HTTP 200 with a
+    # plain-text error body; a real TSV has a header + tab separators.
+    if "\t" not in text and len(fields.split(",")) > 1:
+        logger.error(
+            "ENA returned a non-TSV error body for a batch of %d: %s",
+            len(chunk), text[:200],
+        )
+        failed.extend(chunk)
+        return []
+
+    return parse_tsv_text(text)
 
 
 def main() -> None:
@@ -240,7 +330,7 @@ examples:
         sys.exit(1)
 
     all_rows: List[dict] = []
-    field_names: List[str] = []
+    failed: List[str] = []
     chunks = chunk_list(accessions, args.batch_size)
     logger.info(
         "Fetching metadata in %d batch(es) of up to %d accessions each.",
@@ -250,24 +340,39 @@ examples:
 
     for idx, chunk in enumerate(chunks, start=1):
         logger.info("Processing batch %d/%d (%d accessions)", idx, len(chunks), len(chunk))
-        url = build_url(chunk, args.fields)
-        tsv_text = fetch_tsv(url, timeout=args.timeout, retries=args.retries)
-        if not tsv_text.strip():
-            logger.warning("Batch %d returned empty response; skipping.", idx)
-            continue
-        rows = parse_tsv_text(tsv_text)
-        if rows and not field_names:
-            field_names = list(rows[0].keys())
-        all_rows.extend(rows)
+        all_rows.extend(
+            fetch_chunk_rows(chunk, args.fields, args.timeout, args.retries, failed)
+        )
         if idx < len(chunks):
             time.sleep(args.delay)
 
     if not all_rows:
         logger.error("No metadata retrieved for any accession.")
+        if failed:
+            logger.error("Accessions not found or failed: %s", ", ".join(failed))
         sys.exit(1)
 
-    if not field_names:
-        field_names = args.fields.split(",")
+    # Fieldnames: union across all batches (later batches may differ from
+    # the first one); first-seen order preserved.
+    seen_fields: Dict[str, None] = {}
+    for row in all_rows:
+        for key in row:
+            seen_fields.setdefault(key, None)
+    field_names = list(seen_fields) or args.fields.split(",")
+
+    if failed:
+        if args.output == "-":
+            logger.warning(
+                "Accessions not found or failed (%d): %s",
+                len(failed), ", ".join(failed),
+            )
+        else:
+            failed_path = Path(args.output + ".failed.txt")
+            failed_path.write_text("\n".join(failed) + "\n", encoding="utf-8")
+            logger.warning(
+                "Accessions not found or failed (%d); list written to %s",
+                len(failed), failed_path,
+            )
 
     if args.output == "-":
         writer = csv.DictWriter(sys.stdout, fieldnames=field_names, delimiter="\t")
@@ -281,6 +386,10 @@ examples:
             writer.writeheader()
             writer.writerows(all_rows)
         logger.info("Wrote %d rows to %s", len(all_rows), args.output)
+
+    if failed:
+        # The merged TSV is incomplete; make that visible to pipelines.
+        sys.exit(1)
 
 
 if __name__ == "__main__":
