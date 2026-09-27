@@ -66,7 +66,7 @@ Legend: **Tools** = external executables · **Py** = Python packages (import nam
 | `merge_featurecounts.py` | — (parses output) | pandas | — |
 | `calculate_fpkm_tpm.R` | — | — | GenomicFeatures, getopt |
 | `calculate_effective_length.R` | — | — | GenomicFeatures, getopt |
-| `calculate_tpm.R` | — (function library — sourced, not run) | — | — |
+| `lib/calculate_tpm.R` | — (function library — sourced, not run) | — | — |
 | `filter_expression.py` | — | numpy, pandas | — |
 
 ## Data Retrieval

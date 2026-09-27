@@ -249,7 +249,7 @@ python maf_extract_regions.py --bed cds.bed12 --maf alignment.maf --ref hg38 --c
 | `merge_featurecounts.py` | Python | Merge featureCounts results from multiple samples |
 | `calculate_fpkm_tpm.R` | R | FPKM/TPM from STAR gene-level counts |
 | `calculate_effective_length.R` | R | Non-redundant exon length per gene from GTF |
-| `calculate_tpm.R` | R | Expression unit conversion functions (library) |
+| `lib/calculate_tpm.R` | R | Expression unit conversion functions (shared library — sourced, not run) |
 | `filter_expression.py` | Python | Filter low-expression and low-variability genes |
 
 <details>
