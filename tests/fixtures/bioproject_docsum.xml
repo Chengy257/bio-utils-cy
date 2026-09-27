@@ -1,0 +1,71 @@
+<?xml version="1.0" ?>
+<!-- Structure copied from a real db=bioproject efetch (rettype=xml) docsum:
+     RecordSet > DocumentSummary[uid] > Project > ProjectID (CONTAINER holding
+     ArchiveID/CenterID, no direct text) + ProjectDescr + ProjectType, with
+     Submission/ProjectLinks as siblings OUTSIDE <Project>. -->
+<RecordSet>
+<DocumentSummary uid="4000001">
+    <Project>
+        <ProjectID>
+            <ArchiveID accession="PRJNA111" archive="NCBI" id="4000001"/>
+            <CenterID center="GEO" id="0">GSE000001</CenterID>
+        </ProjectID>
+        <ProjectDescr>
+            <Name>PRJNA111</Name>
+            <Title>Ribo-seq study one</Title>
+            <Description>Ribosome profiling of species one, replicate set A.</Description>
+            <ExternalLink label="">
+                <dbXREF db="GEO">
+                    <ID>GSE000001</ID>
+                </dbXREF>
+            </ExternalLink>
+        </ProjectDescr>
+        <ProjectType>
+            <ProjectTypeSubmission>
+                <Target capture="eWhole" material="eTranscriptome" sample_scope="eMultiisolate">
+                    <Organism species="3702" taxID="3702">
+                        <OrganismName>Species one</OrganismName>
+                        <Supergroup>eViridiplantae</Supergroup>
+                    </Organism>
+                </Target>
+                <Method method_type="eSequencing"/>
+            </ProjectTypeSubmission>
+        </ProjectType>
+    </Project>
+    <Submission last_update="2020-01-02" submission_id="SUB4000001" submitted="2020-01-01">
+        <Description>
+            <Organization role="owner" type="institute">
+                <Name>Test University Lab</Name>
+            </Organization>
+            <Access>public</Access>
+        </Description>
+    </Submission>
+    <ProjectLinks>
+        <Link>
+            <ProjectIDRef archive="NCBI" id="4000001" accession="PRJNA111"/>
+        </Link>
+    </ProjectLinks>
+</DocumentSummary>
+<DocumentSummary uid="4000002">
+    <Project>
+        <ProjectID>
+            <ArchiveID accession="PRJNA222" archive="NCBI" id="4000002"/>
+        </ProjectID>
+        <ProjectDescr>
+            <Name>PRJNA222</Name>
+            <Title>Ribo-seq study two</Title>
+            <Description>Ribosome profiling of species one, replicate set B.</Description>
+        </ProjectDescr>
+        <ProjectType>
+            <ProjectTypeSubmission>
+                <Target capture="eWhole" material="eTranscriptome" sample_scope="eMultiisolate">
+                    <Organism species="3702" taxID="3702">
+                        <OrganismName>Species one</OrganismName>
+                    </Organism>
+                </Target>
+            </ProjectTypeSubmission>
+        </ProjectType>
+    </Project>
+    <Submission last_update="2021-06-10" submission_id="SUB4000002" submitted="2021-06-01"/>
+</DocumentSummary>
+</RecordSet>

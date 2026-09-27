@@ -5,6 +5,23 @@
 # Author: ChengYu
 # Description: Search NCBI SRA for Ribo-seq data by species name or TaxID
 # Created Time: 2026
+# Changelog:
+#   v1.1.0  2026-09-27
+#   - FIX: SRA linking silently failed for every record -- <ProjectID> in
+#     the bioproject docsum XML is a container element (its text is
+#     whitespace), so BioProjectID was stored as "" and the esearch term
+#     became "[BioProject]"; now falls back to the ArchiveID accession and
+#     links SRA via the PRJNA/PRJEB/PRJDB accession (canonical field value)
+#   - FIX: run-accession regex captured only SRR; ERR/DRR (ENA/DDBJ mirror
+#     records) are now extracted too
+#   - FIX: cross-project duplicate runs deduplicated (SRR list and
+#     statistics no longer inflated)
+#   - FIX: --query-type filters the tier instead of clearing the keyword
+#     list (which submitted an empty "()" query); unresolvable species
+#     names now abort with a clear error instead of silently running an
+#     unscoped all-organism search
+#   - FIX: summary printed only the species line (startswith check hit the
+#     leading indentation); statistics text generated once, not twice
 #########################################################################
 """
 Search NCBI for Ribo-seq data by species name or TaxID.
@@ -35,7 +52,7 @@ from xml.etree import ElementTree as ET
 from Bio import Entrez
 from tqdm import tqdm
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +97,7 @@ class NCBISearcher:
         api_key: Optional[str] = None,
         api_delay: float = 0.34,
         custom_keywords: Optional[Dict[str, List[str]]] = None,
+        query_type: str = "both",
     ):
         """
         Initialize NCBI Searcher.
@@ -87,15 +105,18 @@ class NCBISearcher:
         Args:
             email: Email for NCBI Entrez (required by NCBI).
             api_key: Optional NCBI API key for higher rate limits.
-            api_delay: Seconds to sleep between API calls.
+                api_delay: Seconds to sleep between API calls.
             custom_keywords: Dict with ``'strict'`` and ``'medium'`` keys
                 overriding built-in keyword lists.
+            query_type: Which keyword tier(s) to search: "strict", "medium"
+                or "both".
         """
         Entrez.email = email
         if api_key:
             Entrez.api_key = api_key
 
         self.api_delay = api_delay
+        self.query_type = query_type
 
         if custom_keywords:
             self.strict_keywords = custom_keywords.get("strict", DEFAULT_STRICT_KEYWORDS)
@@ -264,9 +285,11 @@ class NCBISearcher:
                 acc_elem.attrib.get("accession", "") if acc_elem is not None else ""
             )
 
-            # BioProject ID
+            # BioProject ID: <ProjectID> is usually a container element
+            # (holding <ArchiveID>/<CenterID>), so its text is whitespace
+            # rather than the numeric ID; fall back to the accession.
             pid_elem = project.find(".//ProjectID")
-            if pid_elem is not None and pid_elem.text:
+            if pid_elem is not None and pid_elem.text and pid_elem.text.strip():
                 record["BioProjectID"] = pid_elem.text.strip()
             else:
                 record["BioProjectID"] = record["Accession"]
@@ -338,7 +361,7 @@ class NCBISearcher:
 
                     for item in summary_data:
                         runs_field = str(item.get("Runs", ""))
-                        srr_ids.update(re.findall(r'acc="(SRR\d+)"', runs_field))
+                        srr_ids.update(re.findall(r'acc="([EDS]RR\d+)"', runs_field))
                 except Exception as exc:
                     logger.warning("esummary batch %d failed: %s", i, exc)
 
@@ -367,8 +390,25 @@ class NCBISearcher:
         input_info = self.detect_input_type(species_or_taxid)
         logger.info("Input type: %s  |  Query: %s", input_info["type"], input_info["label"])
 
+        if input_info["taxid"] is None:
+            # An unresolvable species name would silently degrade to an
+            # unscoped (all-organism) search -- refuse instead.
+            raise ValueError(
+                f"Could not resolve '{species_or_taxid}' to a TaxID; refusing "
+                "to search without an organism filter. Check the spelling or "
+                "pass a numeric TaxID."
+            )
+
         # 2. Build queries
-        queries = self.build_queries(input_info["taxid"])
+        tier_map = {"both": ("STRICT", "MEDIUM"), "strict": ("STRICT",), "medium": ("MEDIUM",)}
+        wanted_tiers = tier_map[self.query_type]
+        keyword_map = {"STRICT": self.strict_keywords, "MEDIUM": self.medium_keywords}
+        empty_tiers = [t for t in wanted_tiers if not keyword_map[t]]
+        if empty_tiers:
+            raise ValueError(
+                f"No keywords available for tier(s): {', '.join(empty_tiers)}."
+            )
+        queries = [q for q in self.build_queries(input_info["taxid"]) if q[0] in wanted_tiers]
         for tier_name, _ in queries:
             kw_count = (
                 len(self.strict_keywords) if tier_name == "STRICT"
@@ -396,22 +436,35 @@ class NCBISearcher:
         # 5. Link to SRA
         logger.info("Linking BioProjects to SRA ...")
         all_srr_ids: List[str] = []
+        seen_srr: Set[str] = set()
+        n_linked_with_dupes = 0
         for bp in tqdm(bioprojects, desc="Linking SRA"):
             bp["QuerySpecies"] = input_info["label"]
-            srr_ids = self.link_sra(bp["BioProjectID"])
+            # Prefer the canonical accession (PRJNA/PRJEB/PRJDB); the
+            # numeric fallback only matches when the ArchiveID id equals
+            # the esearch UID.
+            bp_key = bp.get("Accession") or bp["BioProjectID"]
+            srr_ids = self.link_sra(bp_key)
             bp["LinkedSRA"] = srr_ids
             bp["SRR_Count"] = len(srr_ids)
-            all_srr_ids.extend(srr_ids)
+            n_linked_with_dupes += len(srr_ids)
+            for srr_id in srr_ids:
+                if srr_id not in seen_srr:
+                    seen_srr.add(srr_id)
+                    all_srr_ids.append(srr_id)
 
-        logger.info("Total SRR IDs extracted: %d", len(all_srr_ids))
+        logger.info(
+            "Total run accessions extracted: %d (%d duplicate links removed)",
+            len(all_srr_ids), n_linked_with_dupes - len(all_srr_ids),
+        )
 
         # 6. Save results
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        output_files = self._save_results(bioprojects, all_srr_ids, input_info["label"], output_dir)
 
-        # 7. Statistics report
+        # 7. Statistics report (generated once; shared by report + summary)
         stats = self._generate_statistics(bioprojects, all_srr_ids, input_info["label"])
+        output_files = self._save_results(bioprojects, all_srr_ids, stats, output_dir)
         self._print_summary(stats, output_files)
 
         return {
@@ -429,10 +482,10 @@ class NCBISearcher:
     def _save_results(
         bioprojects: List[Dict],
         srr_ids: List[str],
-        label: str,
+        stats: str,
         output_dir: Path,
     ) -> Dict[str, str]:
-        """Write SRR IDs, BioProject summary TSV, and a text report."""
+        """Write SRR IDs, BioProject summary TSV, and the statistics report."""
         output_files: Dict[str, str] = {}
 
         # SRR ID list
@@ -464,7 +517,6 @@ class NCBISearcher:
 
         # Text report
         report_file = output_dir / "search_report.txt"
-        stats = NCBISearcher._generate_statistics(bioprojects, srr_ids, label)
         with open(report_file, "w", encoding="utf-8") as fh:
             fh.write(stats)
         output_files["report"] = str(report_file)
@@ -508,8 +560,9 @@ class NCBISearcher:
         print("SUMMARY")
         print("=" * 60)
         for line in stats.splitlines():
-            if line.startswith("Query Species:") or line.startswith("Total "):
-                print(f"  {line.strip()}")
+            stripped = line.strip()
+            if stripped.startswith("Query Species:") or stripped.startswith("Total "):
+                print(f"  {stripped}")
         print("\nOutput Files:")
         for ftype, fpath in output_files.items():
             print(f"  - {ftype}: {fpath}")
@@ -653,14 +706,8 @@ def main() -> None:
         api_key=api_key,
         api_delay=args.api_delay,
         custom_keywords=custom_keywords,
+        query_type=args.query_type,
     )
-
-    # Optionally filter tiers
-    if args.query_type != "both":
-        if args.query_type == "strict":
-            searcher.medium_keywords = []
-        else:
-            searcher.strict_keywords = []
 
     try:
         searcher.search(args.species, Path(args.output_dir))
