@@ -9,6 +9,30 @@
 #              passed to the R helper script (plot_heatmap_multi.R) for
 #              combined and individual heatmap generation.
 # Created Time: 2026
+# Changelog:
+#   v1.1.0  2026-09-28
+#   - FIX: gene/GO matching used regex patterns (grep); gene IDs
+#     containing "." (e.g. AT1G01010.1) over-matched unrelated rows
+#     (AT1G01010X1). Matching is now exact first-field (no regex).
+#   - FIX: subset matching also accepted word-boundary neighbours
+#     (gene "bHLH38" matched row "bHLH38-like") and could match the
+#     header line. Only exact first-column equality matches now, and
+#     the header is never re-matched into the data.
+#   - FIX: group labels were emitted in sample-info row order, not in
+#     expression-matrix column order; plot_heatmap_multi.R aligns labels
+#     to columns positionally, so a different order silently mislabeled
+#     every heatmap. Labels are now emitted in matrix column order via a
+#     sample->group lookup, and an unknown sample is a hard error.
+#   - FIX: GO term descriptions containing "." broke the cluster-name
+#     contract (filename field 2 after "." split), and two GO IDs whose
+#     descriptions sanitize identically overwrote each other's subsets
+#     and PDFs. Filenames now embed the sanitized GO ID plus a fully
+#     sanitized description (safe chars only), making names unique.
+#   - FIX: CRLF input files: CR is stripped from the GO ID list, sample
+#     info and expression header before matching.
+#   - CHANGE: all INFO/WARN logs go to stderr; stdout is reserved for
+#     pipeline data.
+#   - GENE_LIST is deduplicated (sort -u) and empty fields dropped.
 #########################################################################
 
 set -euo pipefail
@@ -52,6 +76,12 @@ Optional options:
                      (default: plot_heatmap_multi.R alongside this script)
   -o OUT_PREFIX      Prefix for output files (default: GO_Heatmap)
   -h                 Show this help message and exit
+
+Notes:
+  Every sample column of the expression matrix must have a group in
+  SAMPLE_INFO (entries are matched in matrix column order). Gene and
+  GO ID matching is exact first-column equality — IDs are not treated
+  as regular expressions.
 
 Examples:
   # Basic usage
@@ -115,7 +145,7 @@ done
 # ---------------------------------------------------------------------------
 TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/plot_go_heatmap_batch.XXXXXX")
 cleanup() {
-    echo "[INFO] Cleaning up temporary directory: ${TMPDIR}"
+    echo "[INFO] Cleaning up temporary directory: ${TMPDIR}" >&2
     rm -rf "${TMPDIR}"
 }
 trap cleanup EXIT
@@ -123,25 +153,58 @@ trap cleanup EXIT
 # ---------------------------------------------------------------------------
 # Main logic
 # ---------------------------------------------------------------------------
-echo "[INFO] Starting GO heatmap batch generation"
-echo "[INFO] GO ID list       : ${GO_ID_LIST}"
-echo "[INFO] Expression matrix : ${EXPRESSION_MATRIX}"
-echo "[INFO] Sample info       : ${SAMPLE_INFO}"
-echo "[INFO] GMT file          : ${GMT}"
-echo "[INFO] R script          : ${R_SCRIPT}"
-echo "[INFO] Output prefix     : ${OUT_PREFIX}"
+log_info() { echo "[INFO] $*" >&2; }
+log_warn() { echo "[WARN] $*" >&2; }
 
-EXP_HEADER="${TMPDIR}/exp_headers"
-head -1 "${EXPRESSION_MATRIX}" | tr '\t' '\n' > "${EXP_HEADER}"
+log_info "Starting GO heatmap batch generation"
+log_info "GO ID list       : ${GO_ID_LIST}"
+log_info "Expression matrix : ${EXPRESSION_MATRIX}"
+log_info "Sample info       : ${SAMPLE_INFO}"
+log_info "GMT file          : ${GMT}"
+log_info "R script          : ${R_SCRIPT}"
+log_info "Output prefix     : ${OUT_PREFIX}"
 
-# Build sample group file: extract group labels for columns present in the
-# expression matrix header.
+# Normalize the GO ID list once (strip CR from CRLF files, drop blanks,
+# drop duplicate IDs so a term is never processed twice).
+GO_IDS="${TMPDIR}/go_ids.txt"
+tr -d '\r' < "${GO_ID_LIST}" | sed '/^[[:space:]]*$/d' | awk '!seen[$0]++' > "${GO_IDS}"
+
+# ---------------------------------------------------------------------------
+# Build the sample-group file in EXPRESSION-MATRIX COLUMN ORDER.
+# plot_heatmap_multi.R aligns group labels to matrix columns positionally,
+# so the label order here must follow the matrix header, not the row
+# order of SAMPLE_INFO.
+# ---------------------------------------------------------------------------
+EXP_SAMPLES="${TMPDIR}/exp_samples.txt"
+# matrix header -> one sample per line, skipping the gene-ID column,
+# stripping CR and empty (trailing-tab) fields.
+head -1 "${EXPRESSION_MATRIX}" | tr '\t' '\n' | tail -n +2 \
+    | sed 's/\r$//' | sed '/^[[:space:]]*$/d' > "${EXP_SAMPLES}"
+
 SAMPLE_HEADER="${TMPDIR}/sample_groups.txt"
-tail -n +2 "${SAMPLE_INFO}" \
-    | grep -w -f "${EXP_HEADER}" \
-    | cut -d',' -f2 \
-    > "${SAMPLE_HEADER}"
-echo "[INFO] Found $(wc -l < "${SAMPLE_HEADER}") sample group entries"
+awk -F',' '
+    FNR == NR {
+        if (FNR > 1 && NF >= 2) {
+            sub(/\r$/, "", $1); gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1)
+            sub(/\r$/, "", $2); gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2)
+            map[$1] = $2
+        }
+        next
+    }
+    {
+        if (!($0 in map)) {
+            printf "ERROR: sample %s has no group in sample info file %s\n", $0, ARGV[1] > "/dev/stderr"
+            exit 1
+        }
+        print map[$0]
+    }
+' "${SAMPLE_INFO}" "${EXP_SAMPLES}" > "${SAMPLE_HEADER}"
+
+if [[ ! -s "${SAMPLE_HEADER}" ]]; then
+    echo "ERROR: No sample columns found in the expression matrix header, or no groups resolved." >&2
+    exit 1
+fi
+log_info "Found $(wc -l < "${SAMPLE_HEADER}") sample group entries (matrix column order)"
 
 # For each GO ID, extract gene set from GMT and subset expression matrix.
 FILELIST="${TMPDIR}/exp_file_list.txt"
@@ -149,49 +212,62 @@ FILELIST="${TMPDIR}/exp_file_list.txt"
 
 GO_COUNT=0
 SKIP_COUNT=0
-while IFS= read -r GO_ID || [[ -n "${GO_ID}" ]]; do
-    # Skip blank lines
-    [[ -z "${GO_ID}" ]] && continue
+while IFS= read -r GO_ID; do
+    GO_TAG=$(printf '%s' "${GO_ID}" | sed 's/[^A-Za-z0-9_-]/_/g')
+    GMT_HITS="${TMPDIR}/gmt_hits_${GO_TAG}.txt"
+    # Exact first-column match on the GMT (no regex, CR-safe).
+    awk -F'\t' -v id="${GO_ID}" '{ sub(/\r$/, "", $1); if ($1 == id) print }' \
+        "${GMT}" > "${GMT_HITS}"
 
-    GO_NAME=$(grep -w "${GO_ID}" "${GMT}" | cut -f2 | sort -u | head -1 | sed 's/ /_/g')
-
+    GO_NAME=$(cut -f2 "${GMT_HITS}" | sort -u | head -1)
     if [[ -z "${GO_NAME}" ]]; then
-        echo "[WARN] GO ID '${GO_ID}' not found in GMT file -- skipping"
+        log_warn "GO ID '${GO_ID}' not found in GMT file -- skipping"
         ((SKIP_COUNT++)) || true
         continue
     fi
+    # Description must be filename-safe AND free of "." (the R helper
+    # derives the cluster name from filename field 2 after a "." split).
+    GO_NAME=$(printf '%s' "${GO_NAME}" | sed 's/[^A-Za-z0-9_-]/_/g')
 
-    # Extract gene list for this GO term
-    GENE_LIST="${TMPDIR}/genes_${GO_NAME}.txt"
-    grep -w "${GO_ID}" "${GMT}" | cut -f3- | tr '\t' '\n' | sort -k1 > "${GENE_LIST}"
+    # Extract gene list for this GO term: columns 3+, literal fields,
+    # deduplicated, empty fields (e.g. trailing tabs) dropped.
+    GENE_LIST="${TMPDIR}/genes_${GO_TAG}_${GO_NAME}.txt"
+    cut -f3- "${GMT_HITS}" | tr '\t' '\n' | sed 's/\r$//' \
+        | sed '/^[[:space:]]*$/d' | sort -u > "${GENE_LIST}"
 
     GENE_COUNT=$(wc -l < "${GENE_LIST}")
     if [[ "${GENE_COUNT}" -eq 0 ]]; then
-        echo "[WARN] No genes found for GO ID '${GO_ID}' (${GO_NAME}) -- skipping"
+        log_warn "No genes found for GO ID '${GO_ID}' (${GO_NAME}) -- skipping"
         ((SKIP_COUNT++)) || true
         continue
     fi
 
-    # Subset expression matrix: keep header + matching gene rows
-    SUBSET_EXP="${TMPDIR}/tempExp.${GO_NAME}"
+    # Subset expression matrix: keep header + rows whose first field
+    # equals one of the gene list entries (exact literal match — regex
+    # and word-boundary heuristics would pull in wrong genes). The
+    # header line itself is never re-matched into the data.
+    SUBSET_EXP="${TMPDIR}/tempExp.${GO_TAG}_${GO_NAME}"
     head -1 "${EXPRESSION_MATRIX}" > "${SUBSET_EXP}"
-    grep -w -f "${GENE_LIST}" "${EXPRESSION_MATRIX}" >> "${SUBSET_EXP}" || true
+    tail -n +2 "${EXPRESSION_MATRIX}" | awk -F'\t' '
+        FNR == NR { sub(/\r$/, ""); if ($0 != "") p[$0] = 1; next }
+        { sub(/\r$/, "", $1); if ($1 in p) print }
+    ' "${GENE_LIST}" - >> "${SUBSET_EXP}"
 
     MATCHED=$(($(wc -l < "${SUBSET_EXP}") - 1))
     if [[ "${MATCHED}" -eq 0 ]]; then
-        echo "[WARN] No genes from GO:${GO_ID} (${GO_NAME}) matched in expression matrix -- skipping"
+        log_warn "No genes from ${GO_ID} (${GO_NAME}) matched in expression matrix -- skipping"
         rm -f "${SUBSET_EXP}"
         ((SKIP_COUNT++)) || true
         continue
     fi
 
     echo "${SUBSET_EXP}" >> "${FILELIST}"
-    echo "[INFO] GO:${GO_ID} (${GO_NAME}) -- ${MATCHED} genes matched"
+    log_info "${GO_ID} (${GO_NAME}) -- ${MATCHED}/${GENE_COUNT} genes matched"
     ((GO_COUNT++)) || true
 
-done < "${GO_ID_LIST}"
+done < "${GO_IDS}"
 
-echo "[INFO] Processed ${GO_COUNT} GO terms (${SKIP_COUNT} skipped)"
+log_info "Processed ${GO_COUNT} GO terms (${SKIP_COUNT} skipped)"
 
 if [[ "${GO_COUNT}" -eq 0 ]]; then
     echo "ERROR: No GO terms produced valid gene subsets. Check inputs and try again." >&2
@@ -201,9 +277,12 @@ fi
 # ---------------------------------------------------------------------------
 # Call R heatmap plotting script
 # ---------------------------------------------------------------------------
-echo "[INFO] Calling R heatmap script: ${R_SCRIPT}"
+log_info "Calling R heatmap script: ${R_SCRIPT}"
 RSCRIPT_BIN="$(buc_resolve_bin BUC_RSCRIPT_BIN Rscript)" || { echo "ERROR: Rscript not found. Set BUC_RSCRIPT_BIN in config/env.local.sh." >&2; exit 1; }
-"${RSCRIPT_BIN}" "${R_SCRIPT}" "${FILELIST}" "${SAMPLE_HEADER}" "${OUT_PREFIX}"
-echo "[INFO] R script completed"
+# plot_heatmap_multi.R takes flag options only (-f/-g/-o); a positional
+# call makes getopt() reject the file-list path.
+"${RSCRIPT_BIN}" "${R_SCRIPT}" \
+    -f "${FILELIST}" -g "${SAMPLE_HEADER}" -o "${OUT_PREFIX}"
+log_info "R script completed"
 
-echo "[INFO] Done. Output prefix: ${OUT_PREFIX}"
+log_info "Done. Output prefix: ${OUT_PREFIX}"
