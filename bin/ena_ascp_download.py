@@ -7,6 +7,22 @@
 #               the ENA API, supports parallel downloads, bandwidth control,
 #               and automatic retry on failure.
 # Created Time: 2026
+# Changelog:
+#   v2.1.0  2026-09-27
+#   - FIX: batch with failures still exited 0 -- now exits non-zero and
+#     keeps writing failed_downloads.txt
+#   - FIX: 600 s per-attempt timeout was too short for multi-GB FASTQ;
+#     default raised to 4 h, --timeout 0 disables the cap entirely
+#   - FIX: truncated left-over files were treated as "already downloaded";
+#     file sizes from the API (fastq_bytes) are now compared before skipping
+#   - FIX: ENA API resolved all accessions in a single unchunked GET and
+#     had no retry; now batched (500/batch) with 3 retry attempts each
+#   - FIX: aspera URLs that already carry a user@host are used as-is
+#     instead of being redirected to --host
+#   - FIX: -P 33001 comment (TCP/SSH control port, not UDP)
+#   - CLEAN: dropped dead ftp field / ET import / DEFAULT_ASP_KEY;
+#     read_accessions dedupes and warns on non-run accessions;
+#     --threads honours $BUC_THREADS
 # ==============================================================================
 
 from __future__ import annotations
@@ -15,18 +31,18 @@ import argparse
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
 import urllib.request
 import urllib.error
-import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 logger = logging.getLogger("ena_ascp_download")
 
@@ -35,11 +51,13 @@ logger = logging.getLogger("ena_ascp_download")
 # ---------------------------------------------------------------------------
 DEFAULT_ENA_HOST = "era-fasp@fasp.sra.ebi.ac.uk:"
 DEFAULT_ENA_API = "https://www.ebi.ac.uk/ena/portal/api/filereport"
-DEFAULT_ASP_KEY = None  # will auto-detect
 DEFAULT_BANDWIDTH = "500M"
 DEFAULT_RETRIES = 3
 DEFAULT_THREADS = 4
-DEFAULT_TIMEOUT = 600  # seconds per download attempt
+DEFAULT_TIMEOUT = 14400  # seconds per download attempt (4 h; 0 = unlimited)
+ENA_API_CHUNK = 500      # accessions per ENA portal API request
+
+_RUN_ACC_RE = re.compile(r"^[SED]RR\d+$")
 
 
 # ---------------------------------------------------------------------------
@@ -140,12 +158,38 @@ def find_ascp_key(ascp_bin: str) -> str:
 # ---------------------------------------------------------------------------
 # ENA API helpers
 # ---------------------------------------------------------------------------
+def _fetch_json_with_retry(url: str, timeout: int, retries: int):
+    """GET *url* and parse the JSON body, retrying transient failures."""
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, retries + 1):
+        try:
+            req = urllib.request.Request(url)
+            req.add_header("User-Agent", f"ena_ascp_download/{__version__}")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode())
+        except (urllib.error.URLError, json.JSONDecodeError, OSError) as exc:
+            last_exc = exc
+            logger.warning("ENA API attempt %d/%d failed: %s", attempt, retries, exc)
+            if attempt < retries:
+                wait = min(2 ** attempt, 30)
+                logger.info("Retrying ENA API in %ds ...", wait)
+                time.sleep(wait)
+    raise RuntimeError(
+        f"ENA API request failed after {retries} attempts: {last_exc}"
+    ) from last_exc
+
+
 def resolve_ena_urls(
     accessions: List[str],
     api_url: str = DEFAULT_ENA_API,
     timeout: int = 30,
+    chunk_size: int = ENA_API_CHUNK,
+    retries: int = DEFAULT_RETRIES,
 ) -> List[Tuple[str, str, str]]:
-    """Query the ENA file report API to retrieve FTP/ascp URLs for accessions.
+    """Query the ENA file report API to retrieve aspera URLs for accessions.
+
+    Accessions are sent in batches of *chunk_size* (a single GET with
+    thousands of accessions exceeds URL limits); each batch is retried.
 
     Parameters
     ----------
@@ -155,47 +199,51 @@ def resolve_ena_urls(
         Base URL of the ENA file report API endpoint.
     timeout : int
         HTTP request timeout in seconds.
+    chunk_size : int
+        Accessions per API request.
+    retries : int
+        Attempts per API request.
 
     Returns
     -------
     list[tuple[str, str, str]]
-        Each tuple is ``(accession, fastq_ftp_url, fastq_aspera_url)``.
-        URLs are semicolon-separated when paired-end.
+        Each tuple is ``(accession, fastq_aspera, fastq_bytes)``; the aspera
+        URL and byte-size fields are semicolon-separated when paired-end.
+        Entries without an aspera URL are skipped with a warning.
 
     Raises
     ------
     RuntimeError
-        If the API response cannot be parsed.
+        If an API request fails after all retries.
     """
-    params = "&".join(
-        [
-            "accession=" + ",".join(accessions),
-            "result=read_run",
-            "fields=run_accession,fastq_ftp,fastq_aspera",
-            "format=json",
-            "limit=0",
-        ]
-    )
-    url = f"{api_url}?{params}"
-    logger.info("Querying ENA API: %s", url)
-
-    req = urllib.request.Request(url)
-    req.add_header("User-Agent", "ena_ascp_download/2.0")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode())
-    except (urllib.error.URLError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"ENA API request failed: {exc}") from exc
-
     results: List[Tuple[str, str, str]] = []
-    for entry in data:
-        acc = entry.get("run_accession", "")
-        ftp = entry.get("fastq_ftp", "")
-        aspera = entry.get("fastq_aspera", "")
-        if not acc or not aspera:
-            logger.warning("Skipping %s: no aspera URL available", acc)
-            continue
-        results.append((acc, ftp, aspera))
+    total = len(accessions)
+    for start in range(0, total, chunk_size):
+        chunk = accessions[start:start + chunk_size]
+        params = "&".join(
+            [
+                "accession=" + ",".join(chunk),
+                "result=read_run",
+                "fields=run_accession,fastq_aspera,fastq_bytes",
+                "format=json",
+                "limit=0",
+            ]
+        )
+        url = f"{api_url}?{params}"
+        logger.info(
+            "Querying ENA API (accessions %d-%d of %d)",
+            start + 1, min(start + chunk_size, total), total,
+        )
+        logger.debug("ENA API URL: %s", url)
+        data = _fetch_json_with_retry(url, timeout=timeout, retries=retries)
+
+        for entry in data:
+            acc = entry.get("run_accession", "")
+            aspera = entry.get("fastq_aspera", "")
+            if not acc or not aspera:
+                logger.warning("Skipping %s: no aspera URL available", acc)
+                continue
+            results.append((acc, aspera, entry.get("fastq_bytes", "")))
     return results
 
 
@@ -261,23 +309,80 @@ def run_ascp(
     RuntimeError
         If all retry attempts fail.
     """
+def run_ascp(
+    url: str,
+    outdir: str,
+    ascp_bin: str,
+    ascp_key: str,
+    host: str,
+    bandwidth: str,
+    timeout: int = DEFAULT_TIMEOUT,
+    retries: int = DEFAULT_RETRIES,
+    expected_size: Optional[int] = None,
+) -> str:
+    """Execute a single ascp download with retry logic.
+
+    Parameters
+    ----------
+    url : str
+        The aspera URL (e.g. ``fasp.sra.ebi.ac.uk:/vol1/fastq/SRR...``).
+    outdir : str
+        Local directory to receive the file.
+    ascp_bin : str
+        Path to the ascp binary.
+    ascp_key : str
+        Path to the Aspera private key.
+    host : str
+        Remote host prefix, e.g. ``era-fasp@fasp.sra.ebi.ac.uk:``. Only
+        applied to URLs that do not already carry a ``user@host`` prefix.
+    bandwidth : str
+        Bandwidth limit, e.g. ``500M``.
+    timeout : int
+        Per-attempt timeout in seconds; 0 or negative disables the cap.
+    retries : int
+        Maximum number of retry attempts.
+    expected_size : int, optional
+        Expected file size in bytes (from the ENA API). When given, an
+        existing local file is only treated as complete if its size matches;
+        truncated left-overs are re-downloaded.
+
+    Returns
+    -------
+    str
+        Path to the downloaded file.
+
+    Raises
+    ------
+    RuntimeError
+        If all retry attempts fail.
+    """
     # Derive local filename from URL
     filename = url.rsplit("/", maxsplit=1)[-1]
     dest = os.path.join(outdir, filename)
 
     if os.path.isfile(dest):
-        logger.info("File already exists, skipping: %s", dest)
-        return dest
+        if expected_size is None or os.path.getsize(dest) == expected_size:
+            logger.info("File already exists, skipping: %s", dest)
+            return dest
+        logger.warning(
+            "Existing file %s is %d bytes (expected %d), re-downloading",
+            dest, os.path.getsize(dest), expected_size,
+        )
 
-    # Build the remote source using configured host
-    remote_path = url.split(":", 1)[-1] if ":" in url else url
-    remote_src = f"{host}{remote_path}"
+    # Build the remote source. ENA returns URLs without a user prefix
+    # ("fasp.sra.ebi.ac.uk:/vol1/..."), which need the anonymous user from
+    # --host; URLs that already contain user@host are used verbatim.
+    if "@" in url.split(":", 1)[0]:
+        remote_src = url
+    else:
+        remote_path = url.split(":", 1)[-1] if ":" in url else url
+        remote_src = f"{host}{remote_path}"
 
     cmd = [
         ascp_bin,
         "-T",               # disable encryption for speed
         "-l", bandwidth,
-        "-P", "33001",      # UDP port
+        "-P", "33001",      # TCP/SSH control port (UDP port is -O)
         "-i", ascp_key,
         "-Q",               # adaptive rate
         remote_src,
@@ -285,6 +390,7 @@ def run_ascp(
     ]
 
     logger.debug("ascp command: %s", " ".join(cmd))
+    timeout_arg = timeout if timeout and timeout > 0 else None
 
     last_exc: Optional[Exception] = None
     for attempt in range(1, retries + 1):
@@ -296,7 +402,7 @@ def run_ascp(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                timeout=timeout,
+                timeout=timeout_arg,
                 check=True,
             )
             if result.stderr:
@@ -309,7 +415,7 @@ def run_ascp(
             )
         except subprocess.TimeoutExpired:
             logger.warning("Timeout on attempt %d for %s", attempt, filename)
-            last_exc = RuntimeError(f"Timeout after {timeout}s for {filename}")
+            last_exc = RuntimeError(f"Timeout after {timeout_arg}s for {filename}")
         except subprocess.CalledProcessError as exc:
             stderr = exc.stderr.decode(errors="replace") if exc.stderr else ""
             logger.warning(
@@ -361,12 +467,15 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Output directory (default: ./ena_download)")
     parser.add_argument("-b", "--bandwidth", default=DEFAULT_BANDWIDTH,
                         help=f"Bandwidth limit for ascp (default: {DEFAULT_BANDWIDTH})")
-    parser.add_argument("-t", "--threads", type=int, default=DEFAULT_THREADS,
-                        help=f"Number of parallel downloads (default: {DEFAULT_THREADS})")
+    parser.add_argument("-t", "--threads", type=int,
+                        default=int(os.environ.get("BUC_THREADS", "") or DEFAULT_THREADS),
+                        help=f"Number of parallel downloads (default: {DEFAULT_THREADS}, "
+                             "or $BUC_THREADS)")
     parser.add_argument("--retries", type=int, default=DEFAULT_RETRIES,
                         help=f"Retry attempts per file (default: {DEFAULT_RETRIES})")
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
-                        help=f"Per-download timeout in seconds (default: {DEFAULT_TIMEOUT})")
+                        help=f"Per-download timeout in seconds (default: {DEFAULT_TIMEOUT}); "
+                             "0 disables the cap")
     parser.add_argument("--ascp-bin", default=None,
                         help="Path to ascp binary (default: auto-detect)")
     parser.add_argument("--ascp-key", default=None,
@@ -401,15 +510,19 @@ def setup_logging(level: str) -> None:
 def read_accessions(input_arg: str) -> List[str]:
     """Read accessions from a file or treat input as a single accession.
 
+    Duplicates are removed (order preserved). Entries that do not look like
+    run accessions (SRR/ERR/DRR + digits) are kept but warned about.
+
     Parameters
     ----------
     input_arg : str
-        File path or a bare accession identifier.
+        File path or a bare accession identifier (comma-separated lists are
+        also accepted).
 
     Returns
     -------
     list[str]
-        Cleaned list of accession identifiers.
+        Cleaned, de-duplicated list of accession identifiers.
     """
     path = Path(input_arg)
     if path.is_file():
@@ -419,10 +532,25 @@ def read_accessions(input_arg: str) -> List[str]:
             if line.strip() and not line.strip().startswith("#")
         ]
         logger.info("Read %d accession(s) from %s", len(accs), input_arg)
-        return accs
-    # Assume it is a single accession or comma-separated list
-    accs = [a.strip() for a in input_arg.split(",") if a.strip()]
-    return accs
+    else:
+        # Assume it is a single accession or comma-separated list
+        accs = [a.strip() for a in input_arg.split(",") if a.strip()]
+
+    deduped: List[str] = []
+    seen = set()
+    for acc in accs:
+        if acc not in seen:
+            seen.add(acc)
+            deduped.append(acc)
+    if len(deduped) < len(accs):
+        logger.info("Removed %d duplicate accession(s)", len(accs) - len(deduped))
+    for acc in deduped:
+        if not _RUN_ACC_RE.match(acc):
+            logger.warning(
+                "'%s' does not look like a run accession (SRR/ERR/DRR + digits); "
+                "the ENA API may return no data for it", acc,
+            )
+    return deduped
 
 
 def main() -> None:
@@ -467,12 +595,16 @@ def main() -> None:
     outdir = os.path.abspath(args.outdir)
     os.makedirs(outdir, exist_ok=True)
 
-    # Build download tasks
-    tasks: List[Tuple[str, str]] = []  # (url, outdir)
-    for acc, ftp, aspera in records:
+    # Build download tasks: (url, outdir, expected_size or None)
+    tasks: List[Tuple[str, str, Optional[int]]] = []
+    for acc, aspera, sizes in records:
         urls = parse_aspera_urls(aspera)
-        for u in urls:
-            tasks.append((u, outdir))
+        byte_fields = parse_aspera_urls(sizes) if sizes else []
+        for idx, u in enumerate(urls):
+            size: Optional[int] = None
+            if idx < len(byte_fields) and byte_fields[idx].isdigit():
+                size = int(byte_fields[idx])
+            tasks.append((u, outdir, size))
         logger.info("  %s: %d file(s)", acc, len(urls))
 
     total_tasks = len(tasks)
@@ -493,8 +625,9 @@ def main() -> None:
                 bandwidth=args.bandwidth,
                 timeout=args.timeout,
                 retries=args.retries,
+                expected_size=size,
             ): u
-            for u, d in tasks
+            for u, d, size in tasks
         }
         for future in as_completed(futures):
             url = futures[future]
@@ -517,6 +650,8 @@ def main() -> None:
                 fh.write(f + "\n")
         logger.warning("  Failed URLs written to %s", fail_log)
     logger.info("  Output dir : %s", outdir)
+    if failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
