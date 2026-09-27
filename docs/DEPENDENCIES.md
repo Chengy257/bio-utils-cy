@@ -60,7 +60,7 @@ Legend: **Tools** = external executables · **Py** = Python packages (import nam
 
 | Script | Tools | Py | R |
 |--------|-------|----|---|
-| `deseq2_multigroup.R` | — | — | DESeq2, ggplot2, BiocParallel, gplots, RColorBrewer, amap, getopt |
+| `deseq2_multigroup.R` | — | — | DESeq2, ggplot2, BiocParallel, pheatmap, RColorBrewer, ashr, getopt |
 | `deg_wilcox_test.R` | — | — | edgeR, getopt |
 | `featurecounts_pipeline.sh` | featureCounts, samtools, infer_experiment.py (RSeQC) | — | — |
 | `merge_featurecounts.py` | — (parses output) | pandas | — |
@@ -88,7 +88,7 @@ Legend: **Tools** = external executables · **Py** = Python packages (import nam
 
 | Script | Tools | R |
 |--------|-------|---|
-| `kegg_enrichment.R` | — | clusterProfiler, aPEAR, ggplot2, magrittr, getopt |
+| `kegg_enrichment.R` | — (KEGG, needs network) | clusterProfiler, aPEAR, ggplot2, dplyr, R.utils, magrittr, getopt |
 
 ## Proteomics
 

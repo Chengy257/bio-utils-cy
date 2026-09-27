@@ -14,9 +14,34 @@
 #   - Enrichment network (PDF)
 #
 # Dependencies:
-#   install.packages(c("getopt", "magrittr"))
+#   install.packages(c("getopt", "magrittr", "dplyr", "R.utils"))
 #   BiocManager::install(c("clusterProfiler", "aPEAR"))
-#   install.packages(c("ggplot2", "svglite"))
+#
+# Notes:
+#   - The T2G mapping file must be a 2-column TSV: column 1 = KEGG
+#     transcript id, column 2 = your gene id.
+#   - enrichKEGG is run WITHOUT a custom universe: the background is all
+#     KEGG genes of the organism, not your detected-gene set. Provide a
+#     universe explicitly (enrichKEGG(universe = ...)) if you need that
+#     statistics.
+#
+# Changelog:
+#   v1.1.0  2026-09-27
+#   - FIX: the getopt spec declared pvalue/qvalue/padjust/showcat/libpath
+#     as flags (3rd column 0) — passing e.g. "-p 0.01" crashed at parse
+#     time ("\"0.01\" is not a valid option"), so every documented
+#     threshold invocation was unusable; they take values now
+#   - FIX: the network plot was never saved — enrichmentNetwork()'s
+#     return value was discarded and ggsave() re-used the dot plot (or
+#     failed on last_plot()); the ggplot object is now captured and saved
+#   - FIX: the package check omitted dplyr and R.utils (both used
+#     unconditionally) and required svglite which is never used
+#   - FIX: the output-prefix regex ".DEGs.txt$" did not escape its dots
+#     (matched e.g. "XDEGs.txt")
+#   - FIX: the T2G file must have >= 2 columns — merge() silently produced
+#     wrong mappings otherwise; the expected column order is documented
+#   - CHANGE: @result slot access replaced with as.data.frame(); the
+#     no-universe background choice is documented in the header/help
 
 suppressPackageStartupMessages({
   library(getopt)
@@ -30,13 +55,13 @@ spec <- matrix(c(
   "help",      "h", 0, "logical",   "Show this help message",
   "input",     "i", 1, "character", "Input gene list file (one gene per line)",
   "output",    "o", 1, "character", "Output directory",
-  "t2g",       "t", 1, "character", "Transcript-to-Gene mapping file (TSV)",
+  "t2g",       "t", 1, "character", "Transcript-to-Gene mapping file (2-column TSV: col1=KEGG id, col2=gene id)",
   "organism",  "g", 1, "character", "KEGG organism code (e.g., dosa, hsa, mmu)",
-  "pvalue",    "p", 0, "numeric",   "P-value cutoff (default: 0.05)",
-  "qvalue",    "q", 0, "numeric",   "Q-value cutoff (default: 0.05)",
-  "padjust",   "a", 0, "character", "P-adjust method (default: BH)",
-  "showcat",   "n", 0, "numeric",   "Number of categories in dot plot (default: 10)",
-  "libpath",   "l", 0, "character", "Custom R library path"
+  "pvalue",    "p", 1, "numeric",   "P-value cutoff (default: 0.05)",
+  "qvalue",    "q", 1, "numeric",   "Q-value cutoff (default: 0.05)",
+  "padjust",   "a", 1, "character", "P-adjust method (default: BH)",
+  "showcat",   "n", 1, "numeric",   "Number of categories in dot plot (default: 10)",
+  "libpath",   "l", 1, "character", "Custom R library path"
 ), byrow = TRUE, ncol = 5)
 
 opt <- getopt(spec)
@@ -93,7 +118,7 @@ if (!is.null(opt$libpath)) {
   .libPaths(c(opt$libpath, .libPaths()))
 }
 
-pkgs <- c("clusterProfiler", "ggplot2", "aPEAR", "svglite", "magrittr")
+pkgs <- c("clusterProfiler", "ggplot2", "aPEAR", "dplyr", "R.utils", "magrittr")
 for (pkg in pkgs) {
   if (!requireNamespace(pkg, quietly = TRUE)) {
     stop(sprintf("Package '%s' is not installed. Please install it first.", pkg))
@@ -113,7 +138,7 @@ R.utils::setOption("clusterProfiler.download.method", "auto")
 # Prepare output directory
 # -------------------------------------------------------------------------
 
-out_prefix <- gsub(".DEGs.txt$", "", basename(input_file))
+out_prefix <- gsub("\\.DEGs\\.txt$", "", basename(input_file))
 out_dir_slash <- paste0(output_dir, "/")
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
@@ -127,6 +152,10 @@ message("[INFO] Gene count: ", length(gene_list))
 
 message("[INFO] Reading transcript-to-gene mapping: ", t2g_file)
 T2G <- read.table(t2g_file, header = FALSE, sep = "\t", stringsAsFactors = FALSE)
+if (ncol(T2G) < 2) {
+  stop("T2G mapping file must have >= 2 columns (col1 = KEGG transcript id, ",
+       "col2 = your gene id); got ", ncol(T2G), " column(s) in ", t2g_file)
+}
 
 # -------------------------------------------------------------------------
 # Map genes to KEGG transcript IDs
@@ -154,7 +183,7 @@ ekegg <- enrichKEGG(
   qvalueCutoff = qvalue_cutoff
 )
 
-if (is.null(ekegg) || nrow(ekegg@result) == 0) {
+if (is.null(ekegg) || nrow(as.data.frame(ekegg)) == 0) {
   warning("No significant KEGG pathways found.")
   quit(status = 0)
 }
@@ -166,7 +195,7 @@ if (is.null(ekegg) || nrow(ekegg@result) == 0) {
 date_str <- Sys.Date()
 
 # Enrichment table (filtered by p-value)
-sig_results <- ekegg@result %>% dplyr::filter(pvalue <= pvalue_cutoff)
+sig_results <- subset(as.data.frame(ekegg), pvalue <= pvalue_cutoff)
 xls_path <- paste0(out_dir_slash, out_prefix, "_EnrichResult_KEGG_", date_str, ".xls")
 write.table(
   sig_results,
@@ -185,10 +214,10 @@ ggsave(filename = dot_path, plot = p, device = "pdf", width = 6, height = 6)
 message("[INFO] Saved dot plot: ", dot_path)
 
 # Enrichment network
-sig_for_network <- ekegg@result %>% dplyr::filter(pvalue <= pvalue_cutoff)
+sig_for_network <- subset(as.data.frame(ekegg), pvalue <= pvalue_cutoff)
 if (nrow(sig_for_network) > 0) {
   net_path <- paste0(out_dir_slash, out_prefix, "_KEGG_", date_str, "_Network.pdf")
-  aPEAR::enrichmentNetwork(
+  net <- aPEAR::enrichmentNetwork(
     sig_for_network,
     colorBy = "p.adjust",
     colorType = "pval",
@@ -197,7 +226,7 @@ if (nrow(sig_for_network) > 0) {
     verbose = FALSE,
     nodeSize = "Count"
   )
-  ggsave(filename = net_path, device = "pdf", width = 6, height = 6)
+  ggsave(filename = net_path, plot = net, device = "pdf", width = 6, height = 6)
   message("[INFO] Saved network plot: ", net_path)
 }
 
