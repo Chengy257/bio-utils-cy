@@ -96,8 +96,9 @@ buc_resolve_bin() {
 export -f buc_resolve_bin 2>/dev/null || true
 
 # --- Machine-specific overrides (gitignored; sourced last, has the last word) --
+# Set BUC_SKIP_LOCAL_ENV=1 to ignore env.local.sh entirely (test escape hatch).
 _local="$(dirname "${BASH_SOURCE[0]}")/env.local.sh"
-if [ -f "$_local" ]; then
+if [ -f "$_local" ] && [ -z "${BUC_SKIP_LOCAL_ENV:-}" ]; then
     . "$_local"
 fi
 unset -v _local
