@@ -7,6 +7,28 @@
 #              Reads a two-column TSV (sample, count) and produces a PDF
 #              with ellipses arranged radially around a central circle.
 # Created Time: 2026
+# Changelog:
+#   v1.1.0  2026-09-28
+#   - FIX: petal ellipses were rotated by the sector angle only,
+#     missing the start angle, so with the default start=90 every
+#     petal's long axis lay tangentially (the "flower" rendered as a
+#     cross/plus). The ellipse rotation now equals the radial direction
+#     (start + sector*(t-1)), so petals point outward.
+#   - FIX: sample labels mixed coordinate frames (srt = sector ± start
+#     with a branch on the un-rotated sector), rendering some labels
+#     upside down / mirrored (e.g. S1/S3 at top and bottom). Labels now
+#     sit radially beyond each petal tip, rotated along the radius and
+#     flipped on the left half so text is never upside down.
+#   - FIX: plot() lacked asp=1 (ellipses/circle distort on non-square
+#     devices); added, and the plot range now adapts to the label
+#     radius so nothing clips.
+#   - FIX: value labels were drawn at a fixed radius that falls
+#     outside the petals once there are more than ~20 samples. Labels
+#     now sit mid-petal (radius adapts to the petal length).
+#   - FIX: negative counts are rejected (intersection sizes must be
+#     non-negative); text-cex must be positive.
+#   - CHANGE: INFO/summary logs go to stderr via message(); silent
+#     dev.off().
 #########################################################################
 
 suppressMessages(library(getopt))
@@ -62,6 +84,10 @@ circle_col  <- if (is.null(opt$`center-color`))   "#97E196FF" else opt$`center-c
 text_cex    <- if (is.null(opt$`text-cex`))        1           else opt$`text-cex`
 start_angle <- if (is.null(opt$`start-angle`))     90          else opt$`start-angle`
 
+if (!is.numeric(text_cex) || text_cex <= 0) {
+    stop("Error: --text-cex must be a positive number.")
+}
+
 # -------------------------------------------------------------------------
 # Read and validate input data
 # -------------------------------------------------------------------------
@@ -90,6 +116,11 @@ if (any(is.na(values))) {
                 paste(missing_idx, collapse = ", ")))
 }
 
+if (any(values < 0)) {
+    stop(paste0("Error: Negative counts are not valid intersection sizes (rows: ",
+                paste(which(values < 0), collapse = ", "), ")."))
+}
+
 if (any(is.na(samples) | samples == "")) {
     stop("Error: Empty or missing sample names detected in input.")
 }
@@ -99,19 +130,19 @@ n <- length(samples)
 # -------------------------------------------------------------------------
 # Print summary
 # -------------------------------------------------------------------------
-cat("=== Flower Plot Summary ===\n")
-cat(sprintf("  Input file    : %s\n", opt$input))
-cat(sprintf("  Output file   : %s\n", opt$output))
-cat(sprintf("  Number of samples: %d\n", n))
-cat(sprintf("  Petal color   : %s\n", ellipse_col))
-cat(sprintf("  Center color  : %s\n", circle_col))
-cat(sprintf("  Start angle   : %.1f degrees\n", start_angle))
-cat(sprintf("  Text cex      : %.2f\n", text_cex))
-cat("  Sample counts:\n")
+message("=== Flower Plot Summary ===")
+message(sprintf("  Input file    : %s", opt$input))
+message(sprintf("  Output file   : %s", opt$output))
+message(sprintf("  Number of samples: %d", n))
+message(sprintf("  Petal color   : %s", ellipse_col))
+message(sprintf("  Center color  : %s", circle_col))
+message(sprintf("  Start angle   : %.1f degrees", start_angle))
+message(sprintf("  Text cex      : %.2f", text_cex))
+message("  Sample counts:")
 for (i in seq_len(n)) {
-    cat(sprintf("    %-30s : %g\n", samples[i], values[i]))
+    message(sprintf("    %-30s : %g", samples[i], values[i]))
 }
-cat("===========================\n")
+message("===========================")
 
 # -------------------------------------------------------------------------
 # Flower plot function
@@ -122,54 +153,49 @@ flower_plot <- function(sample, value, start, a, b,
                         circle_text_cex = 1) {
 
     par(bty = "n", ann = FALSE, xaxt = "n", yaxt = "n", mar = c(1, 1, 1, 1))
-    plot(c(0, 10), c(0, 10), type = "n")
 
     n   <- length(sample)
     deg <- 360 / n
+    r_value <- 1 + a / 2      # mid-petal radius for the value label
+    r_label <- 1 + a + 0.4    # sample label radius, beyond the petal tip
+    lim <- r_label + 2.6      # keep rotated labels inside the canvas
+
+    plot(5 + c(-lim, lim), 5 + c(-lim, lim), type = "n", asp = 1)
 
     for (t in seq_len(n)) {
-        # Draw petal ellipse
+        theta <- start + deg * (t - 1)          # radial direction (deg)
+        ct <- cos(theta * pi / 180)
+        st <- sin(theta * pi / 180)
+
+        # Petal: centre on the circle edge, long axis along the radius.
         plotrix::draw.ellipse(
-            x     = 5 + cos((start + deg * (t - 1)) * pi / 180),
-            y     = 5 + sin((start + deg * (t - 1)) * pi / 180),
-            col   = ellipse_col,
+            x      = 5 + ct,
+            y      = 5 + st,
+            col    = ellipse_col,
             border = ellipse_col,
-            a     = a,
-            b     = b,
-            angle = deg * (t - 1)
+            a      = a,
+            b      = b,
+            angle  = theta
         )
 
-        # Value label inside petal
-        text(
-            x = 5 + 2.5 * cos((start + deg * (t - 1)) * pi / 180),
-            y = 5 + 2.5 * sin((start + deg * (t - 1)) * pi / 180),
-            value[t]
-        )
+        # Value label inside the petal
+        text(x = 5 + r_value * ct, y = 5 + r_value * st, value[t])
 
-        # Sample label outside petal (rotate for readability)
-        angle_deg <- deg * (t - 1)
-        if (angle_deg < 180 && angle_deg > 0) {
-            text(
-                x   = 5 + 3.3 * cos((start + angle_deg) * pi / 180),
-                y   = 5 + 3.3 * sin((start + angle_deg) * pi / 180),
-                sample[t],
-                srt = angle_deg - start,
-                adj = 1,
-                cex = circle_text_cex
-            )
-        } else {
-            text(
-                x   = 5 + 3.3 * cos((start + angle_deg) * pi / 180),
-                y   = 5 + 3.3 * sin((start + angle_deg) * pi / 180),
-                sample[t],
-                srt = angle_deg + start,
-                adj = 0,
-                cex = circle_text_cex
-            )
-        }
+        # Sample label beyond the petal tip, rotated along the radius;
+        # flipped on the left half so glyphs stay upright. The anchor
+        # sits at the outer end: when the reading direction points
+        # inward (against the radius) the text must END at the anchor.
+        tn <- theta %% 360
+        srt <- tn
+        if (tn > 90 && tn < 270) srt <- tn + 180
+        rad <- pi / 180
+        inward <- cos(tn * rad) * cos(srt * rad) + sin(tn * rad) * sin(srt * rad) < 0
+        adj <- if (inward) 1 else 0
+        text(x = 5 + r_label * ct, y = 5 + r_label * st,
+             sample[t], srt = srt, adj = adj, cex = circle_text_cex)
     }
 
-    # Center circle (intersection)
+    # Center circle (intersection) — drawn last to cover petal roots
     plotrix::draw.circle(x = 5, y = 5, r = 1,
                          col = circle_col, border = circle_col)
 }
@@ -200,9 +226,9 @@ tryCatch({
         circle_col     = circle_col,
         circle_text_cex = text_cex
     )
-    dev.off()
-    cat(sprintf("PDF written to: %s\n", opt$output))
+    invisible(dev.off())
+    message(sprintf("PDF written to: %s", opt$output))
 }, error = function(e) {
-    if (dev.cur() > 1) dev.off()
+    if (dev.cur() > 1) invisible(dev.off())
     stop(paste0("Error writing PDF: ", e$message))
 })
