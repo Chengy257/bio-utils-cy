@@ -1,11 +1,25 @@
 #!/usr/bin/env python3
 """
-File Name: fetch_sra_metadata_comprehensive.py
+File Name: fetch_sra_metadata_ncbi.py
 Author: ChengYu
 Description: Three-step comprehensive SRA metadata retrieval:
              RunInfo -> BioSample -> Experiment from NCBI.
              Fetches metadata in batches, merges results into a single TSV.
 Created Time: 2026
+
+Changelog:
+  v1.1.0  2026-09-27
+  - FIX: --email was required but never sent to NCBI (tool/email are part
+    of the E-utilities convention); email + tool now sent with every
+    request, and --email defaults to $NCBI_EMAIL
+  - FIX: api_key leaked into debug logs (full URL was logged); URLs are
+    now logged with the key masked
+  - FIX: 4xx client errors (except 429) were retried 3 times before
+    failing; they now abort immediately
+  - FIX: extract/merge BioSample key sets disagreed ("bio_sample"/"biosample"
+    were extracted but not merged) -- single shared key tuple now
+  - CLEAN: input IDs deduplicated with a warning for non-run accessions;
+    dead Any import removed; docstring filename corrected
 """
 
 from __future__ import annotations
@@ -14,24 +28,45 @@ import argparse
 import csv
 import logging
 import os
+import re
 import sys
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 NCBI_EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+NCBI_TOOL_NAME = "fetch_sra_metadata_ncbi"
 DEFAULT_BATCH_SIZE = 50
 DEFAULT_TIMEOUT = 120
 DEFAULT_RETRY_DELAY = 3.0
 DEFAULT_MAX_RETRIES = 3
 
+# RunInfo CSV column holding the BioSample accession; the lowercase
+# variants cover older/alternative CSV headers.
+BIOSAMPLE_KEYS = ("BioSample", "SampleAccession", "bio_sample", "biosample")
+
+_RUN_ACC_RE = re.compile(r"^[SED]RR\d+$")
+
 logger = logging.getLogger(__name__)
+
+
+class _ClientHTTPError(RuntimeError):
+    """HTTP 4xx (non-429) error: not retried."""
+
+    def __init__(self, code: int, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def _sanitize_url(url: str) -> str:
+    """Mask the api_key parameter so it never reaches logs."""
+    return re.sub(r"(api_key=)[^&]+", r"\1***", url)
 
 
 # ---------------------------------------------------------------------------
@@ -51,16 +86,19 @@ def _fetch_url(url: str, timeout: int = DEFAULT_TIMEOUT) -> str:
     Raises:
         RuntimeError: On any fetch failure.
     """
-    logger.debug("Fetching: %s", url)
+    logger.debug("Fetching: %s", _sanitize_url(url))
     req = Request(url)
     try:
         with urlopen(req, timeout=timeout) as resp:
             charset = resp.headers.get_content_charset() or "utf-8"
             return resp.read().decode(charset)
     except HTTPError as exc:
-        raise RuntimeError(f"HTTP {exc.code} fetching {url}: {exc.reason}") from exc
+        message = f"HTTP {exc.code} fetching {_sanitize_url(url)}: {exc.reason}"
+        if 400 <= exc.code < 500 and exc.code != 429:
+            raise _ClientHTTPError(exc.code, message) from exc
+        raise RuntimeError(message) from exc
     except URLError as exc:
-        raise RuntimeError(f"URL error fetching {url}: {exc}") from exc
+        raise RuntimeError(f"URL error fetching {_sanitize_url(url)}: {exc}") from exc
 
 
 def _fetch_with_retry(
@@ -87,6 +125,9 @@ def _fetch_with_retry(
     for attempt in range(1, max_retries + 1):
         try:
             return _fetch_url(url, timeout=timeout)
+        except _ClientHTTPError as exc:
+            logger.error("Not retrying client error: %s", exc)
+            raise
         except RuntimeError as exc:
             last_exc = exc
             logger.warning("Attempt %d/%d failed: %s", attempt, max_retries, exc)
@@ -100,18 +141,22 @@ def _fetch_with_retry(
 def _read_ids(path: str) -> List[str]:
     """Read IDs from a file, one per line, skipping blanks and comments.
 
-    Args:
-        path: Path to the text file.
-
-    Returns:
-        List of ID strings.
+    Duplicates are removed (order preserved); tokens that do not look like
+    run accessions are kept but warned about.
     """
     ids: List[str] = []
     with open(path, "r", encoding="utf-8") as fh:
         for line in fh:
             token = line.strip()
             if token and not token.startswith("#"):
-                ids.append(token)
+                if token not in ids:
+                    ids.append(token)
+    for token in ids:
+        if not _RUN_ACC_RE.match(token):
+            logger.warning(
+                "'%s' does not look like a run accession (SRR/ERR/DRR + digits)",
+                token,
+            )
     return ids
 
 
@@ -119,11 +164,21 @@ def _read_ids(path: str) -> List[str]:
 # Step 1: RunInfo
 # ---------------------------------------------------------------------------
 
+def _eutils_params(extra: Dict[str, str], email: str, api_key: Optional[str]) -> Dict[str, str]:
+    """Build E-utilities request params, adding the tool/email convention."""
+    params = {"tool": NCBI_TOOL_NAME, "email": email}
+    params.update(extra)
+    if api_key:
+        params["api_key"] = api_key
+    return params
+
+
 def fetch_runinfo(
     srr_ids: List[str],
     batch_size: int = DEFAULT_BATCH_SIZE,
     timeout: int = DEFAULT_TIMEOUT,
     api_key: Optional[str] = None,
+    email: str = "",
 ) -> List[Dict[str, str]]:
     """Fetch RunInfo CSV metadata from NCBI for given SRR IDs.
 
@@ -132,6 +187,7 @@ def fetch_runinfo(
         batch_size: Number of IDs per request.
         timeout: HTTP timeout per request.
         api_key: Optional NCBI API key for higher rate limits.
+        email: Requester email (sent to NCBI per their conventions).
 
     Returns:
         List of dicts representing each run's RunInfo fields.
@@ -140,14 +196,10 @@ def fetch_runinfo(
     for start in range(0, len(srr_ids), batch_size):
         batch = srr_ids[start : start + batch_size]
         id_str = ",".join(batch)
-        params = {
-            "db": "sra",
-            "id": id_str,
-            "rettype": "runinfo",
-            "retmode": "text",
-        }
-        if api_key:
-            params["api_key"] = api_key
+        params = _eutils_params(
+            {"db": "sra", "id": id_str, "rettype": "runinfo", "retmode": "text"},
+            email=email, api_key=api_key,
+        )
         url = f"{NCBI_EUTILS_BASE}/efetch.fcgi?{urlencode(params)}"
         logger.info(
             "Fetching RunInfo batch %d-%d of %d",
@@ -180,7 +232,7 @@ def _extract_biosample_accessions(runinfo_rows: List[Dict[str, str]]) -> List[st
     """
     sample_set = set()
     for row in runinfo_rows:
-        for key in ("BioSample", "SampleAccession", "bio_sample", "biosample"):
+        for key in BIOSAMPLE_KEYS:
             val = row.get(key, "").strip()
             if val:
                 sample_set.add(val)
@@ -193,6 +245,7 @@ def fetch_biosample_xml(
     batch_size: int = DEFAULT_BATCH_SIZE,
     timeout: int = DEFAULT_TIMEOUT,
     api_key: Optional[str] = None,
+    email: str = "",
 ) -> Dict[str, Dict[str, str]]:
     """Fetch BioSample XML and extract sample attributes.
 
@@ -201,6 +254,7 @@ def fetch_biosample_xml(
         batch_size: Number of IDs per request.
         timeout: HTTP timeout per request.
         api_key: Optional NCBI API key.
+        email: Requester email (sent to NCBI per their conventions).
 
     Returns:
         Dict mapping BioSample accession -> attribute dict.
@@ -209,14 +263,10 @@ def fetch_biosample_xml(
     for start in range(0, len(biosample_ids), batch_size):
         batch = biosample_ids[start : start + batch_size]
         id_str = ",".join(batch)
-        params = {
-            "db": "biosample",
-            "id": id_str,
-            "rettype": "full",
-            "retmode": "xml",
-        }
-        if api_key:
-            params["api_key"] = api_key
+        params = _eutils_params(
+            {"db": "biosample", "id": id_str, "rettype": "full", "retmode": "xml"},
+            email=email, api_key=api_key,
+        )
         url = f"{NCBI_EUTILS_BASE}/efetch.fcgi?{urlencode(params)}"
         logger.info(
             "Fetching BioSample XML batch %d-%d of %d",
@@ -260,6 +310,7 @@ def fetch_experiment_xml(
     batch_size: int = DEFAULT_BATCH_SIZE,
     timeout: int = DEFAULT_TIMEOUT,
     api_key: Optional[str] = None,
+    email: str = "",
 ) -> Dict[str, Dict[str, str]]:
     """Fetch SRA experiment XML and extract experiment-level attributes.
 
@@ -268,6 +319,7 @@ def fetch_experiment_xml(
         batch_size: Number of IDs per request.
         timeout: HTTP timeout per request.
         api_key: Optional NCBI API key.
+        email: Requester email (sent to NCBI per their conventions).
 
     Returns:
         Dict mapping run accession -> experiment attribute dict.
@@ -276,14 +328,10 @@ def fetch_experiment_xml(
     for start in range(0, len(srr_ids), batch_size):
         batch = srr_ids[start : start + batch_size]
         id_str = ",".join(batch)
-        params = {
-            "db": "sra",
-            "id": id_str,
-            "rettype": "full",
-            "retmode": "xml",
-        }
-        if api_key:
-            params["api_key"] = api_key
+        params = _eutils_params(
+            {"db": "sra", "id": id_str, "rettype": "full", "retmode": "xml"},
+            email=email, api_key=api_key,
+        )
         url = f"{NCBI_EUTILS_BASE}/efetch.fcgi?{urlencode(params)}"
         logger.info(
             "Fetching Experiment XML batch %d-%d of %d",
@@ -345,7 +393,12 @@ def merge_metadata(
     for row in runinfo_rows:
         combined = dict(row)
         run_acc = row.get("Run", row.get("run_accession", ""))
-        bio_acc = row.get("BioSample", row.get("SampleAccession", ""))
+        bio_acc = ""
+        for key in BIOSAMPLE_KEYS:
+            val = row.get(key, "").strip()
+            if val:
+                bio_acc = val
+                break
         if bio_acc and bio_acc in biosample_data:
             for k, v in biosample_data[bio_acc].items():
                 combined[f"biosample_{k}"] = v
@@ -423,7 +476,9 @@ examples:
         help="Directory for output TSV files (default: current directory).",
     )
     parser.add_argument(
-        "--email", required=True, help="Email address for NCBI E-utilities."
+        "--email",
+        default=os.environ.get("NCBI_EMAIL", ""),
+        help="Email address for NCBI E-utilities (default: $NCBI_EMAIL).",
     )
     parser.add_argument(
         "--api-key",
@@ -459,6 +514,12 @@ examples:
     )
     args = parser.parse_args()
 
+    if not args.email:
+        parser.error(
+            "An email address is required for NCBI E-utilities: pass --email "
+            "or set the NCBI_EMAIL environment variable."
+        )
+
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -484,6 +545,7 @@ examples:
         batch_size=args.batch_size,
         timeout=args.timeout,
         api_key=args.api_key or None,
+        email=args.email,
     )
     if not runinfo_rows:
         logger.error("No RunInfo data retrieved. Exiting.")
@@ -499,6 +561,7 @@ examples:
             batch_size=args.batch_size,
             timeout=args.timeout,
             api_key=args.api_key or None,
+            email=args.email,
         )
     else:
         logger.warning("No BioSample accessions found in RunInfo.")
@@ -510,6 +573,7 @@ examples:
         batch_size=args.batch_size,
         timeout=args.timeout,
         api_key=args.api_key or None,
+        email=args.email,
     )
 
     # Merge
