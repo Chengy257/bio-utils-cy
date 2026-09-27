@@ -64,6 +64,58 @@ def find_rscript():
 RSCRIPT = find_rscript()
 
 
+def find_r_pair(*pkgs):
+    """Find (rscript, R_LIBS) such that every package in pkgs loads.
+
+    R packages are built per R version, so the Rscript binary and the
+    user library must be probed as a pair (the getopt-capable R that
+    find_rscript() prefers may not be the one whose user library has the
+    Bioconductor packages). Returns (None, None) when no combination
+    works, in which case R tests that need those packages should skip.
+    """
+    probe = ("cat(all(vapply(c(%s), requireNamespace, logical(1), quietly=TRUE)))"
+             % ",".join('"%s"' % p for p in pkgs))
+    rscripts = []
+    cand = os.environ.get("BUC_RSCRIPT_BIN")
+    if cand and Path(cand).exists():
+        rscripts.append(cand)
+    which = shutil.which("Rscript")
+    if which:
+        rscripts.append(which)
+    home = Path.home()
+    for pattern in ("soft/miniconda3/envs/*/bin/Rscript",
+                    "soft/miniconda3/bin/Rscript",
+                    "miniconda3/envs/*/bin/Rscript"):
+        rscripts.extend(sorted(str(p) for p in home.glob(pattern)))
+
+    lib_candidates = [""]
+    if os.environ.get("BUC_R_LIBS"):
+        lib_candidates.insert(0, os.environ["BUC_R_LIBS"])
+    lib_candidates += sorted(str(p) for p in home.glob("R/Rlib_*"))
+
+    seen = set()
+    for rs in rscripts:
+        if rs in seen or not _rscript_works(rs):
+            continue
+        seen.add(rs)
+        if not pkgs:
+            return rs, ""
+        for libs in lib_candidates:
+            env = dict(os.environ)
+            if libs:
+                env["R_LIBS"] = libs
+            elif "R_LIBS" in env:
+                del env["R_LIBS"]
+            try:
+                proc = subprocess.run([rs, "-e", probe], env=env,
+                                      capture_output=True, text=True, timeout=180)
+            except Exception:
+                continue
+            if proc.returncode == 0 and proc.stdout.strip() == "TRUE":
+                return rs, libs
+    return None, None
+
+
 class ScriptTestCase(unittest.TestCase):
     """Base class: temp working dir + helpers to run a bin/ script."""
 
