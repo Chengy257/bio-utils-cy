@@ -82,7 +82,7 @@ Legend: **Tools** = external executables · **Py** = Python packages (import nam
 | `pride_metadata.py` | — (HTTPS for `fetch`) | — | — |
 | `search_sra_riboseq.py` | — (HTTPS) | Bio, tqdm | NCBI_EMAIL, NCBI_API_KEY |
 | `format_sra_summary.py` | — | — | — |
-| `extract_species_rna_rfam.sh` | — | — | — |
+| `extract_species_rna_rfam.sh` | seqkit (BUC_SEQKIT_BIN) | — | — |
 
 ## Enrichment
 
