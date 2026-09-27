@@ -9,7 +9,16 @@
 #
 # Created Time: 2026
 #
-# Changelog (vs v2.0.0):
+# Changelog:
+#   v2.2.0  2026-09-27
+#   - FIX: --dry-run aborted when prefetch/parallel were not installed
+#     (tools were resolved before the plan was printed); the plan now
+#     references missing tools by name (with a warning)
+#   - FIX: FastQC scanned every *.fastq* in the output directory including
+#     files from previous runs; it now only receives files produced this run
+#   - FIX: [INFO] logs went to stdout; all logs now go to stderr
+#   - FIX: --max-size is validated (digits with optional K/M/G/T suffix)
+#   - Accessions not matching SRR/ERR/DRR+digits now produce a warning
 #   v2.1.1  2026-09-24
 #   - Tool defaults may come from the project configuration (config/env.sh):
 #     BUC_PREFETCH_BIN, BUC_FASTERQ_DUMP_BIN / BUC_FASTQ_DUMP_BIN (by mode),
@@ -48,7 +57,7 @@ unset -v _my_conf
 shopt -s nullglob
 
 readonly SCRIPT_NAME="$(basename "$0")"
-readonly VERSION="2.1.0"
+readonly VERSION="2.2.0"
 
 # ---------------------------------------------------------------------------
 # Usage
@@ -108,7 +117,7 @@ EOF
 # ---------------------------------------------------------------------------
 # Logging helpers
 # ---------------------------------------------------------------------------
-log()     { printf "[%(%Y-%m-%d %H:%M:%S)T] [INFO]  %s\n" -1 "$*"; }
+log()     { printf "[%(%Y-%m-%d %H:%M:%S)T] [INFO]  %s\n" -1 "$*" >&2; }
 warn()    { printf "[%(%Y-%m-%d %H:%M:%S)T] [WARN]  %s\n" -1 "$*" >&2; }
 error()   { printf "[%(%Y-%m-%d %H:%M:%S)T] [ERROR] %s\n" -1 "$*" >&2; }
 fatal()   { error "$@"; exit 1; }
@@ -133,6 +142,18 @@ resolve_bin() {
             fatal "Could not find '${name}' on PATH. Install it or supply --${opt_hint}."
         fi
         echo "${found}"
+    fi
+}
+
+resolve_bin_soft() {
+    # --dry-run flavour of resolve_bin: when a tool is missing, reference it
+    # by name (with a warning) instead of aborting, so the plan can be
+    # printed on machines without the toolkit.
+    if [[ -z "${2:-}" ]] && ! command -v "$1" >/dev/null 2>&1; then
+        warn "Could not find '$1' on PATH; --dry-run plan will reference it by name."
+        echo "$1"
+    else
+        resolve_bin "$@"
     fi
 }
 
@@ -217,11 +238,21 @@ fi
 if [[ -z "${MAX_SIZE}" ]]; then
     fatal "--max-size must not be empty (e.g. 100G)"
 fi
+if ! [[ "${MAX_SIZE}" =~ ^[0-9]+[KMGkmgTt]?$ ]]; then
+    fatal "Invalid --max-size value: ${MAX_SIZE} (expected e.g. 100G, 500M, or plain bytes)"
+fi
 
 # ---------------------------------------------------------------------------
 # Resolve tool paths and pick dump flags by the actual binary flavor
 # ---------------------------------------------------------------------------
 log "Resolving tool paths..."
+
+# Dry runs reference missing tools by name instead of aborting early.
+if "${DRY_RUN}"; then
+    resolve_bin_or_soft() { resolve_bin_soft "$@"; }
+else
+    resolve_bin_or_soft() { resolve_bin "$@"; }
+fi
 
 if "${SC_MODE}"; then
     DUMP_NAME="fasterq-dump"
@@ -236,12 +267,12 @@ if [[ -z "${DUMP_BIN}" ]]; then
         DUMP_BIN="${BUC_FASTQ_DUMP_BIN:-}"
     fi
 fi
-DUMP_BIN="$(resolve_bin "${DUMP_NAME}" "${DUMP_BIN}" "dump-bin")"
-PREFETCH_BIN="$(resolve_bin prefetch "${PREFETCH_BIN}" "prefetch-bin")"
-PARALLEL_BIN="$(resolve_bin parallel "${PARALLEL_BIN}" "parallel-bin")"
+DUMP_BIN="$(resolve_bin_or_soft "${DUMP_NAME}" "${DUMP_BIN}" "dump-bin")"
+PREFETCH_BIN="$(resolve_bin_or_soft prefetch "${PREFETCH_BIN}" "prefetch-bin")"
+PARALLEL_BIN="$(resolve_bin_or_soft parallel "${PARALLEL_BIN}" "parallel-bin")"
 
 if "${RUN_FASTQC}"; then
-    FASTQC_BIN="$(resolve_bin fastqc "${FASTQC_BIN}" "fastqc-bin")"
+    FASTQC_BIN="$(resolve_bin_or_soft fastqc "${FASTQC_BIN}" "fastqc-bin")"
 fi
 
 DUMP_FLAVOR="fastq-dump"
@@ -306,6 +337,11 @@ TOTAL="${#ACCESSIONS[@]}"
 if [[ "${TOTAL}" -eq 0 ]]; then
     fatal "No accessions found in ${INPUT_FILE}"
 fi
+for srr in "${ACCESSIONS[@]}"; do
+    if ! [[ "${srr}" =~ ^[SED]RR[0-9]+$ ]]; then
+        warn "'${srr}' does not look like a run accession (SRR/ERR/DRR + digits); NCBI may reject it."
+    fi
+done
 
 # ---------------------------------------------------------------------------
 # Classify: skip finished accessions, remember which have a cached .sra
@@ -512,7 +548,6 @@ if [[ "${N_JOBS}" -gt 0 ]]; then
     fi
 else
     log "Nothing to process: all ${TOTAL} accession(s) already have FASTQ output."
-    FAILED_SRRS=()
 fi
 
 # ---------------------------------------------------------------------------
@@ -546,11 +581,18 @@ if [[ "${N_FAILED}" -gt 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Optional FastQC
+# Optional FastQC (only on files produced by THIS run, not earlier runs')
 # ---------------------------------------------------------------------------
 if "${RUN_FASTQC}"; then
-    log "Running FastQC on downloaded FASTQ files..."
-    mapfile -t FASTQ_FILES < <(find "${OUTDIR}" -maxdepth 1 -name '*.fastq*' -type f)
+    log "Running FastQC on FASTQ files produced this run..."
+    FASTQ_FILES=()
+    for srr in ${JOB_SRRS[@]+"${JOB_SRRS[@]}"}; do
+        for f in "${OUTDIR}/${srr}.fastq"* "${OUTDIR}/${srr}_"*".fastq"*; do
+            if [[ -f "${f}" ]]; then
+                FASTQ_FILES+=("${f}")
+            fi
+        done
+    done
     if [[ ${#FASTQ_FILES[@]} -gt 0 ]]; then
         "${FASTQC_BIN}" -t "${THREADS}" -o "${OUTDIR}/fastqc_output" "${FASTQ_FILES[@]}" || true
         log "FastQC complete. Results in ${OUTDIR}/fastqc_output/"
