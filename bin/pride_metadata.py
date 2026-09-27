@@ -8,6 +8,16 @@ Description: PRIDE proteomics metadata tool — merged from fetch_pride_metadata
                fetch  Query the PRIDE API for PXD accessions -> merged TSV
                parse  Extract metadata from local PRIDE JSON file(s) -> CSV/TSV/XLSX
 Created Time: 2026
+
+Changelog:
+  v2.1.0  2026-09-27
+  - CLEAN: --version was defined three times (top level + both
+    subcommands); it now lives at the top level only
+  - FIX: PXD accessions are deduplicated; tokens not matching PXD\\d+ are
+    warned about
+  - DOC: fetch output is always TSV (stated in the -o help text); the
+    multi-project "; " merge in `parse` is documented as the known
+    downstream-joining caveat
 """
 
 from __future__ import annotations
@@ -16,6 +26,7 @@ import argparse
 import csv
 import json
 import logging
+import re
 import sys
 import time
 from pathlib import Path
@@ -23,12 +34,14 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 PRIDE_PROJECT_API = "https://www.ebi.ac.uk/pride/ws/archive/v2/projects/{accession}"
 DEFAULT_TIMEOUT = 60
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_DELAY = 2.0
+
+_PXD_RE = re.compile(r"^PXD\d+$", re.IGNORECASE)
 
 logger = logging.getLogger(__name__)
 
@@ -224,13 +237,24 @@ def _fetch_with_retry(
 
 
 def _read_accessions(path: str) -> List[str]:
-    """Read PXD accessions from a file, one per line (skips blanks/comments)."""
+    """Read PXD accessions from a file, one per line.
+
+    Blank lines and comments are skipped; duplicates are removed (order
+    preserved); tokens that do not look like PXD accessions are warned
+    about but kept.
+    """
     accs: List[str] = []
     with open(path, "r", encoding="utf-8") as fh:
         for line in fh:
             tok = line.strip()
-            if tok and not tok.startswith("#"):
+            if tok and not tok.startswith("#") and tok not in accs:
                 accs.append(tok)
+    for tok in accs:
+        if not _PXD_RE.match(tok):
+            logger.warning(
+                "'%s' does not look like a PRIDE accession (PXD + digits); "
+                "the API may return 404 for it", tok,
+            )
     return accs
 
 
@@ -471,7 +495,8 @@ examples:
     p_fetch.add_argument("-i", "--input-file", required=True,
                          help="File with one PXD accession per line.")
     p_fetch.add_argument("-o", "--output", default="-",
-                         help="Output TSV path (default: stdout).")
+                         help="Output TSV path (default: stdout; output is "
+                              "always tab-separated regardless of extension).")
     p_fetch.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
                          help=f"HTTP timeout in seconds (default: {DEFAULT_TIMEOUT}).")
     p_fetch.add_argument("--retries", type=int, default=DEFAULT_MAX_RETRIES,
@@ -480,7 +505,6 @@ examples:
                          help="Delay in seconds between requests (default: 1.0).")
     p_fetch.add_argument("--log-level", default="INFO",
                          choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
-    p_fetch.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p_fetch.set_defaults(func=cmd_fetch)
 
     p_parse = sub.add_parser(
@@ -497,7 +521,6 @@ examples:
                          help="Do not search directories recursively.")
     p_parse.add_argument("--log-level", default="INFO",
                          choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
-    p_parse.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p_parse.set_defaults(func=cmd_parse)
 
     return parser
