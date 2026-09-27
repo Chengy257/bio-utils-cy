@@ -82,19 +82,22 @@ class TestDeseq2Multigroup(ScriptTestCase):
         self.assertEqual(proc.stdout, "")
         self.assertIn("[INFO] Running DESeq2...", proc.stderr)
 
-        res_dir = out / "DEG_tables"
+        # the script appends "_DESeq2_results" to the -o prefix
+        res_root = Path(str(out) + "_DESeq2_results")
+        res_dir = res_root / "DEG_tables"
         deg = res_dir / "treatA_vs_control_DESeq2.tsv"
-        self.assertTrue(deg.exists(), sorted(p.name for p in res_dir.iterdir()))
+        self.assertTrue(deg.exists(), sorted(p.name for p in res_root.iterdir()))
         header = deg.read_text().splitlines()[0]
         self.assertIn("regulation", header.split("\t"))
         self.assertIn("log2FoldChange", header.split("\t"))
 
-        regs = {ln.split("\t")[-2] for ln in deg.read_text().splitlines()[1:]}
+        regs = {ln.split("\t")[-1] for ln in deg.read_text().splitlines()[1:]}
         self.assertIn("Up", regs)  # planted up-genes must be recovered
+        self.assertIn("Unsig", regs)
 
         for name in ("vst_Pearson_heatmap.pdf", "vst_PCA_plot.pdf",
                      "normalized_counts.tsv", "DEG_tables/treatB_vs_control_volcano.pdf"):
-            self.assertTrue((out / name).exists(), name)
+            self.assertTrue((res_root / name).exists(), name)
 
     def test_na_padj_reported_not_silent(self):
         cpath, spath = self._write_fixtures()
