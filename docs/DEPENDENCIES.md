@@ -133,5 +133,5 @@ Legend: **Tools** = external executables · **Py** = Python packages (import nam
 
 - **External tools** (20): prefetch, fasterq-dump, fastq-dump, fastqc, parallel, ascp, blastn, blastp, makeblastdb, mkdssp, pymol, ChimeraX, plink, vcftools, featureCounts, samtools, infer_experiment.py, bamCoverage, gtf2bed, gff2bed — pin each in `config/env.local.sh`. (`bedtools` is no longer needed by any script; the former `BUC_BEDTOOLS_BIN` slot was removed from `config/env.sh`.)
 - **Python** (10 hard requirements): biopython, pandas, numpy, matplotlib, networkx, scipy, scikit-learn, community (python-louvain), tqdm, markov-clustering. Optional: pymzml (mzML input for plot_ms2_spectrum), openpyxl (xlsx output for pride_metadata).
-- **R** (34): see tables above — the Rscript interpreter and library path come from `BUC_RSCRIPT_BIN` / `BUC_R_LIBS`.
+- **R** (34): see tables above — the Rscript interpreter and library path come from `BUC_RSCRIPT_BIN` / `BUC_R_LIBS`. If a package fails with a `dyn.load` error (typically stringi resolving `libicui18n.so.70`), set `BUC_LD_LIBRARY_PATH` in `config/env.local.sh` to the directory holding those conda libraries (e.g. `$HOME/soft/miniconda3/lib`).
 - **Credentials**: `NCBI_EMAIL`, `NCBI_API_KEY` for NCBI E-utilities scripts.

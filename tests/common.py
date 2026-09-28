@@ -116,6 +116,25 @@ def find_r_pair(*pkgs):
     return None, None
 
 
+def find_icu70_lib():
+    """Directory holding conda icu70 (stringi's runtime dependency), if any.
+
+    R packages whose dependency chain includes stringi (Gviz,
+    GenomicFeatures, clusterProfiler, ...) only dyn.load when
+    stringi.so can resolve libicui18n.so.70; on machines where that
+    library came from a conda installation it lives outside the R
+    runtime's default search path. Returns the directory (to add to
+    LD_LIBRARY_PATH) or None.
+    """
+    home = Path.home()
+    for cand in (home / "soft" / "miniconda3" / "lib",
+                 home / "miniconda3" / "lib",
+                 home / "anaconda3" / "lib"):
+        if (cand / "libicui18n.so.70").exists():
+            return str(cand)
+    return None
+
+
 class ScriptTestCase(unittest.TestCase):
     """Base class: temp working dir + helpers to run a bin/ script."""
 

@@ -67,6 +67,13 @@ BUC_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # directories prepended to PATH for script subprocesses. Normally empty.
 : "${BUC_EXTRA_PATH:=}"
 
+# Escape hatch for dynamically loaded libraries: directories prepended to
+# LD_LIBRARY_PATH for R/Python subprocesses. Needed when an R library was
+# compiled against conda-provided shared objects the R runtime cannot find
+# (e.g. stringi -> libicui18n.so.70 under $HOME/soft/miniconda3/lib).
+# Normally empty.
+: "${BUC_LD_LIBRARY_PATH:=}"
+
 # Where tools/doctor.sh --locate searches for candidate binaries.
 : "${BUC_LOCATE_DIRS:=$HOME/soft/miniconda3/envs:/opt/anaconda3/envs:/usr/local/bin:$HOME/soft}"
 
@@ -112,6 +119,11 @@ if [ -n "${BUC_EXTRA_PATH}" ]; then
     export PATH="${BUC_EXTRA_PATH%/}:${PATH}"
 fi
 
+# LD_LIBRARY_PATH escape hatch (see BUC_LD_LIBRARY_PATH above).
+if [ -n "${BUC_LD_LIBRARY_PATH}" ]; then
+    export LD_LIBRARY_PATH="${BUC_LD_LIBRARY_PATH%/}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+fi
+
 # --- Export everything scripts should see -------------------------------------
 export BUC_HOME BUC_CONFIG_LOADED BUC_THREADS NCBI_EMAIL NCBI_API_KEY \
     BUC_PYTHON_BIN BUC_RSCRIPT_BIN BUC_R_LIBS \
@@ -121,4 +133,4 @@ export BUC_HOME BUC_CONFIG_LOADED BUC_THREADS NCBI_EMAIL NCBI_API_KEY \
     BUC_PLINK_BIN BUC_VCFTOOLS_BIN BUC_FEATURECOUNTS_BIN BUC_SAMTOOLS_BIN \
     BUC_INFER_EXP_BIN \
     BUC_BAMCOVERAGE_BIN BUC_GTF2BED_BIN BUC_GFF2BED_BIN \
-    BUC_EXTRA_PATH BUC_LOCATE_DIRS
+    BUC_EXTRA_PATH BUC_LD_LIBRARY_PATH BUC_LOCATE_DIRS

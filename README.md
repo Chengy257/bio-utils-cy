@@ -507,6 +507,7 @@ Consumed variables:
 | `BUC_PYTHON_BIN`, `BUC_RSCRIPT_BIN`, `BUC_R_LIBS` | interpreters and R package library (exported as `R_LIBS`) |
 | `BUC_PREFETCH_BIN`, `BUC_FASTERQ_DUMP_BIN`, `BUC_FASTQ_DUMP_BIN`, … | one slot per external tool — see `config/env.local.sh.example` for the full list |
 | `BUC_EXTRA_PATH` | escape hatch: directories prepended to PATH for scripts that look up companion binaries by name |
+| `BUC_LD_LIBRARY_PATH` | escape hatch: directories prepended to `LD_LIBRARY_PATH` for R/Python subprocesses — set when an R library fails to load because it was compiled against conda-provided shared objects (e.g. stringi needing `libicui18n.so.70`) |
 | `BUC_HOME` | set automatically (repository root) |
 
 Maintenance commands:

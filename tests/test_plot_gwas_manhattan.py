@@ -13,28 +13,14 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import ScriptTestCase, find_r_pair  # noqa: E402
+from common import ScriptTestCase, find_r_pair, find_icu70_lib  # noqa: E402
 
 BIN = Path(__file__).resolve().parent.parent / "bin"
 
 RS, RLIBS = find_r_pair("getopt", "ggplot2", "qqman", "data.table")
 
-
-def _find_icu70_lib():
-    """Directory holding conda icu70 (stringi's runtime dependency), if any.
-
-    Gviz/GenomicRanges load only when stringi.so can resolve
-    libicui18n.so.70; on this machine it lives in the miniconda3 root
-    lib. Returns None when absent (regional tests then skip)."""
-    home = Path.home()
-    for cand in (home / "soft" / "miniconda3" / "lib",
-                 home / "miniconda3" / "lib"):
-        if (cand / "libicui18n.so.70").exists():
-            return str(cand)
-    return None
-
-
-_ICU_LIB = _find_icu70_lib()
+# Gviz/GenomicRanges load only when stringi.so resolves its conda icu70.
+_ICU_LIB = find_icu70_lib()
 
 
 def _gviz_loadable():
