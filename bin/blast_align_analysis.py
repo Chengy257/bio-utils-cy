@@ -7,6 +7,11 @@
 # Created Time: 2026
 #
 # Changelog:
+#   v1.1.1  2026-09-29
+#   - NEW: --matrix option for blastp (protein) comparisons. Default
+#     PAM30 keeps the v1.x behaviour (a blastp-short-style short-protein
+#     tuning); use BLOSUM62 for longer or more divergent proteins. The
+#     gap penalties and -seg no stay as configured.
 #   v1.1.0  2026-09-26
 #   - FIX: protein queries passed to blastp kept their terminal stop
 #     codon as '*'; translation now stops at the first stop codon
@@ -33,7 +38,9 @@ Nucleotide identity uses the alignment length (gap columns included) as
 denominator, matching BLAST outfmt6 pident. The default nucleotide task
 is blastn-short (tuned for very short queries); for CDS-sized or longer
 sequences pass --task blastn (or megablast) — e-value scales differ
-between tasks.
+between tasks. Protein comparisons use blastp with --matrix (default
+PAM30, a short-protein tuning kept from v1.x; prefer BLOSUM62 for
+longer or more divergent proteins).
 
 Requires: blastn, blastp (NCBI BLAST+)
 """
@@ -53,14 +60,22 @@ from Bio import SeqIO
 from Bio.Blast import NCBIXML
 from Bio.Seq import Seq
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 VALID_BLASTN_TASKS = ("blastn", "blastn-short", "megablast", "dc-megablast")
 
 # blastn-short is kept as the default for backwards compatibility; it is
 # only appropriate for very short queries (<~30 bp).
 
-BLASTP_PARAMS = ["-matrix", "PAM30", "-seg", "no", "-gapopen", "9", "-gapextend", "1"]
+VALID_PROTEIN_MATRICES = (
+    "BLOSUM45", "BLOSUM50", "BLOSUM62", "BLOSUM80", "BLOSUM90",
+    "PAM30", "PAM70", "PAM250",
+)
+DEFAULT_PROTEIN_MATRIX = "PAM30"
+
+# blastp-short-style gap/seg tuning kept from v1.0; only the matrix is
+# selectable via --matrix.
+BLASTP_GAP_PARAMS = ["-seg", "no", "-gapopen", "9", "-gapextend", "1"]
 
 
 def resolve_tool(name: str) -> str:
@@ -125,6 +140,7 @@ def run_blast(
     target_seq: Seq,
     is_protein: bool = False,
     blast_task: str = "blastn-short",
+    protein_matrix: str = DEFAULT_PROTEIN_MATRIX,
 ) -> dict:
     """Run BLAST between two sequences and return similarity metrics.
 
@@ -133,6 +149,7 @@ def run_blast(
         target_seq: Target/subject sequence.
         is_protein: Whether to use blastp instead of blastn.
         blast_task: blastn task (ignored for blastp).
+        protein_matrix: Score matrix for blastp (ignored for blastn).
 
     Returns:
         Dict with 'e-value', 'bit_score', 'identity' keys (None on failure).
@@ -153,7 +170,7 @@ def run_blast(
 
         program = resolve_tool("blastp" if is_protein else "blastn")
         if is_protein:
-            extra_params = BLASTP_PARAMS
+            extra_params = ["-matrix", protein_matrix] + BLASTP_GAP_PARAMS
         else:
             # Dust filtering stays off for every task: this tool compares
             # orthologous (often GC-rich) sequences, and DUST can mask
@@ -199,12 +216,15 @@ def extract_species(record_id: str) -> str:
     return record_id.split(".")[0]
 
 
-def process_file(file_path: str, reference_species: str, blast_task: str = "blastn-short") -> list:
+def process_file(file_path: str, reference_species: str, blast_task: str = "blastn-short",
+                 protein_matrix: str = DEFAULT_PROTEIN_MATRIX) -> list:
     """Process a single multi-species FASTA file.
 
     Args:
         file_path: Path to the DNA FASTA file.
         reference_species: Species name to use as reference.
+        blast_task: blastn task for nucleotide comparisons.
+        protein_matrix: Score matrix for the blastp comparisons.
 
     Returns:
         List of result dicts with similarity metrics.
@@ -240,7 +260,8 @@ def process_file(file_path: str, reference_species: str, blast_task: str = "blas
             continue
 
         nuc_blast = run_blast(ref_seq, target_seq, is_protein=False, blast_task=blast_task)
-        prot_blast = run_blast(ref_seq.translate(to_stop=True), target_seq.translate(to_stop=True), is_protein=True)
+        prot_blast = run_blast(ref_seq.translate(to_stop=True), target_seq.translate(to_stop=True),
+                               is_protein=True, protein_matrix=protein_matrix)
 
         results.append({
             "file": os.path.basename(file_path),
@@ -262,6 +283,7 @@ def analyze_directory(
     threads: int = 4,
     suffix: str = ".dna.fa",
     blast_task: str = "blastn-short",
+    protein_matrix: str = DEFAULT_PROTEIN_MATRIX,
 ) -> None:
     """Analyze all matching FASTA files in a directory.
 
@@ -272,6 +294,7 @@ def analyze_directory(
         threads: Number of parallel workers.
         suffix: File suffix to match (default: .dna.fa).
         blast_task: blastn task for nucleotide comparisons.
+        protein_matrix: Score matrix for the blastp comparisons.
     """
     files = sorted(
         os.path.join(input_dir, f)
@@ -288,7 +311,7 @@ def analyze_directory(
     results = []
     with ThreadPoolExecutor(max_workers=threads) as executor:
         future_map = {
-            executor.submit(process_file, fp, reference_species, blast_task): fp
+            executor.submit(process_file, fp, reference_species, blast_task, protein_matrix): fp
             for fp in files
         }
         for future in as_completed(future_map):
@@ -345,6 +368,15 @@ examples:
              "e-value scales differ between tasks.",
     )
     parser.add_argument(
+        "--matrix", type=str, default=DEFAULT_PROTEIN_MATRIX,
+        choices=VALID_PROTEIN_MATRICES,
+        help="Score matrix for blastp (protein) comparisons. Default: "
+             "PAM30, the v1.x short-protein tuning (blastp-short style, "
+             "kept for backwards compatibility); use BLOSUM62 for longer "
+             "or more divergent proteins. Gap penalties and -seg no are "
+             "unchanged.",
+    )
+    parser.add_argument(
         "--suffix", type=str, default=".dna.fa",
         help="File suffix to match in input directory (default: .dna.fa).",
     )
@@ -393,6 +425,7 @@ def main() -> None:
         threads=args.threads,
         suffix=args.suffix,
         blast_task=args.task,
+        protein_matrix=args.matrix,
     )
 
 

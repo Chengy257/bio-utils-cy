@@ -68,6 +68,21 @@ class BlastAlignAnalysisTest(ScriptTestCase):
         proc, _ = self._dir_and_run(fasta, "--task", "tblastx")
         self.assertEqual(proc.returncode, 2)
 
+    def test_matrix_blosum62_runs(self):
+        # Pins the --matrix plumbing: an accepted matrix reaches blastp
+        # and the protein column still fills in.
+        fasta = f">human.g1\n{DNA_HUMAN}\n>mouse.g1\n{DNA_MOUSE}\n"
+        proc, out = self._dir_and_run(fasta, "--matrix", "BLOSUM62")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(out) as fh:
+            rows = {r["target"]: r for r in csv.DictReader(fh)}
+        self.assertIsNotNone(rows["mouse.g1"]["protein_identity"])
+
+    def test_invalid_matrix_rejected(self):
+        fasta = f">human.g1\n{DNA_HUMAN}\n>mouse.g1\n{DNA_MOUSE}\n"
+        proc, _ = self._dir_and_run(fasta, "--matrix", "PAM999")
+        self.assertEqual(proc.returncode, 2)
+
     def test_missing_reference_species(self):
         fasta = f">mouse.g1\n{DNA_MOUSE}\n"
         proc, out = self._dir_and_run(fasta)
