@@ -50,7 +50,6 @@ REGISTRY=(
     "BUC_FEATURECOUNTS_BIN|featureCounts"
     "BUC_SAMTOOLS_BIN|samtools"
     "BUC_INFER_EXP_BIN|infer_experiment.py"
-    "BUC_BEDTOOLS_BIN|bedtools"
     "BUC_BAMCOVERAGE_BIN|bamCoverage"
     "BUC_GTF2BED_BIN|gtf2bed"
     "BUC_GFF2BED_BIN|gff2bed"
