@@ -1,8 +1,9 @@
 """Functional tests for bin/plot_gwas_manhattan.R.
 
 Manhattan + QQ paths run against real qqman with synthetic EMMAX/map
-data. The regional path needs Gviz/magick (not installed) and is only
-statically reviewed.
+data. The regional path additionally needs Gviz + GenomicRanges
+(loadable since the stringi/icu70 LD_LIBRARY_PATH fix; a functional
+regional test is still pending).
 """
 
 import os
@@ -17,6 +18,38 @@ from common import ScriptTestCase, find_r_pair  # noqa: E402
 BIN = Path(__file__).resolve().parent.parent / "bin"
 
 RS, RLIBS = find_r_pair("getopt", "ggplot2", "qqman", "data.table")
+
+
+def _find_icu70_lib():
+    """Directory holding conda icu70 (stringi's runtime dependency), if any.
+
+    Gviz/GenomicRanges load only when stringi.so can resolve
+    libicui18n.so.70; on this machine it lives in the miniconda3 root
+    lib. Returns None when absent (regional tests then skip)."""
+    home = Path.home()
+    for cand in (home / "soft" / "miniconda3" / "lib",
+                 home / "miniconda3" / "lib"):
+        if (cand / "libicui18n.so.70").exists():
+            return str(cand)
+    return None
+
+
+_ICU_LIB = _find_icu70_lib()
+
+
+def _gviz_loadable():
+    if not RS or not _ICU_LIB:
+        return False
+    env = dict(os.environ)
+    if RLIBS:
+        env["R_LIBS"] = RLIBS
+    prev = env.get("LD_LIBRARY_PATH")
+    env["LD_LIBRARY_PATH"] = _ICU_LIB + (":" + prev if prev else "")
+    probe = subprocess.run(
+        [RS, "-e", "suppressMessages(library(Gviz)); suppressMessages(library(GenomicRanges))"],
+        capture_output=True, text=True, timeout=300, env=env,
+    )
+    return probe.returncode == 0
 
 
 def build_gwas(n_per_chr=(("1", 200), ("2", 150)), extra_rows=None, seed=42):
@@ -37,12 +70,15 @@ def build_gwas(n_per_chr=(("1", 200), ("2", 150)), extra_rows=None, seed=42):
     return "\n".join(emmax) + "\n", "\n".join(mapr) + "\n"
 
 
-@unittest.skipUnless(RS, "R with getopt+ggplot2+qqman+data.table not available")
-class TestPlotGwasManhattan(ScriptTestCase):
-    def _run(self, *args):
+class _GwasRunMixin:
+    """Shared Rscript runner; concrete classes add their own tests."""
+
+    def _run(self, *args, env_extra=None):
         env = dict(os.environ)
         if RLIBS:
             env["R_LIBS"] = RLIBS
+        if env_extra:
+            env.update(env_extra)
         old_cwd = os.getcwd()
         os.chdir(self.tmp)  # outputs are CWD-relative
         try:
@@ -53,6 +89,9 @@ class TestPlotGwasManhattan(ScriptTestCase):
         finally:
             os.chdir(old_cwd)
 
+
+@unittest.skipUnless(RS, "R with getopt+ggplot2+qqman+data.table not available")
+class TestPlotGwasManhattan(_GwasRunMixin, ScriptTestCase):
     def test_full_run_produces_both_pdfs(self):
         emmax, mapr = build_gwas()
         e = self.write("gw.emmax", emmax)
@@ -137,6 +176,39 @@ class TestPlotGwasManhattan(ScriptTestCase):
         proc = self._run("-h")
         self.assertEqual(proc.returncode, 0)
         self.assertIn("Usage:", proc.stdout)
+
+
+BED12_LINE = ("chr1\t4990000\t5010000\tgeneA\t0\t+\t4990000\t5010000"
+              "\t0,0,0\t3\t300,200,300,\t0,700,900,")
+
+
+@unittest.skipUnless(_gviz_loadable(), "Gviz/GenomicRanges not loadable (icu70 runtime path unavailable)")
+class TestGwasRegional(_GwasRunMixin, ScriptTestCase):
+    """Regional-path end-to-end renders; requires Gviz, which needs the
+    conda icu70 dir on LD_LIBRARY_PATH for stringi."""
+
+    def _regional_run(self, bed_text):
+        emmax, mapr = build_gwas(n_per_chr=(("1", 300), ("2", 100)))
+        e = self.write("gw.emmax", emmax)
+        m = self.write("gw.map", mapr)
+        b = self.write("genes.bed12", bed_text)
+        prev = os.environ.get("LD_LIBRARY_PATH")
+        ld = _ICU_LIB + (":" + prev if prev else "")
+        return self._run("-e", e, "-m", m, "-o", "res", "-b", b,
+                         env_extra={"LD_LIBRARY_PATH": ld})
+
+    def test_regional_standard_bed12(self):
+        proc = self._regional_run(BED12_LINE + "\n")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("regional Manhattan plot", proc.stderr)
+        self.assertTrue((self.tmp / "res_regional.pdf").exists(), proc.stderr)
+
+    def test_regional_bed_with_extra_columns(self):
+        # Regression: a 13th (custom) column used to crash with an opaque
+        # data.table name/column-count mismatch; first 12 columns are used.
+        proc = self._regional_run(BED12_LINE + "\tcustom_note\n")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue((self.tmp / "res_regional.pdf").exists(), proc.stderr)
 
 
 if __name__ == "__main__":

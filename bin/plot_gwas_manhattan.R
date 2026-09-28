@@ -10,6 +10,10 @@
 #              supplied.
 # Created Time: 2026
 # Changelog:
+#   v1.1.1  2026-09-29
+#   - FIX: BED files with extra custom columns (>12) crashed the
+#     regional path with an opaque data.table name/column-count error;
+#     the first 12 columns are now used and extra columns ignored.
 #   v1.1.0  2026-09-28
 #   - FIX: SNPs on non-numeric chromosomes (chrX, chrM, scaffolds) were
 #     coerced to NA and passed straight to qqman, which aborted the
@@ -261,13 +265,18 @@ plot_regional_manhattan <- function(data, bed_file, extension_val, output_file) 
   suppressMessages(library(GenomicRanges))
   suppressMessages(library(cowplot))
 
-  # Read BED12 file (first row)
+  # Read BED12 file (first row). BED permits extra custom columns after
+  # column 12; keep the first 12 and name them so the column count never
+  # mismatches the name vector.
   bed_data <- tryCatch(
     fread(bed_file, header = FALSE),
     error = function(e) stop("Failed to read BED file: ", e$message)
   )
   if (ncol(bed_data) < 12) {
     stop("BED file must be in BED12 format (12 columns). Found: ", ncol(bed_data))
+  }
+  if (ncol(bed_data) > 12) {
+    bed_data <- bed_data[, 1:12]
   }
   bed_row <- bed_data[1, ]
   setnames(bed_row, c("chrom", "start", "end", "name", "score", "strand",
