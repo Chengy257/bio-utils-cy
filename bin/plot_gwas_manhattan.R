@@ -9,6 +9,24 @@
 #              Manhattan plot with Gviz gene tracks when a BED12 file is
 #              supplied.
 # Created Time: 2026
+# Changelog:
+#   v1.1.0  2026-09-28
+#   - FIX: SNPs on non-numeric chromosomes (chrX, chrM, scaffolds) were
+#     coerced to NA and passed straight to qqman, which aborted the
+#     whole run with "'times' invalid" - no Manhattan, QQ or regional
+#     plot was produced at all. Non-integer chromosomes are now dropped
+#     with a count and examples; the same cleanup covers missing BP and
+#     missing or out-of-range p-values (P <= 0 or P > 1), and the
+#     inner-join drop counts are reported.
+#   - FIX: BED12 blockSizes was filtered for positive values while
+#     blockStarts only had NAs removed, so a 0-length block desynchron-
+#     ised the two vectors and exon boundaries were silently computed
+#     from mismatched pairs. Blocks are now parsed as pairs.
+#   - FIX: --signif-line/--suggest-line outside (0, 1] are rejected up
+#     front instead of producing Inf axis breaks.
+#   - CHANGE: the regional plot requires a numeric chromosome in the
+#     BED chrom column and fails with a clear message otherwise.
+#   - CHANGE: dev.off() calls are silent (no "null device" on stdout).
 #########################################################################
 
 suppressMessages(library(getopt))
@@ -110,6 +128,16 @@ if (!is.null(bed_file) && !file.exists(bed_file)) {
   stop("BED file not found: ", bed_file)
 }
 
+# Thresholds feed -log10(); reject anything outside (0, 1]
+if (!is.numeric(signif_line) || length(signif_line) != 1 ||
+    is.na(signif_line) || signif_line <= 0 || signif_line > 1) {
+  stop("--signif-line must be a number in (0, 1].")
+}
+if (!is.numeric(suggest_line) || length(suggest_line) != 1 ||
+    is.na(suggest_line) || suggest_line <= 0 || suggest_line > 1) {
+  stop("--suggest-line must be a number in (0, 1].")
+}
+
 # -------------------------------------------------------------------------
 # Helper: read and merge EMMAX + map data
 # -------------------------------------------------------------------------
@@ -136,15 +164,46 @@ read_data <- function(emmax_file, map_file) {
   map_data <- map_data[, 1:4]
   setnames(map_data, c("CHR", "SNP", "C", "BP"))
 
-  # Normalise chromosome: strip common prefixes (Chr, chr, Chr0, chr0) to bare integer
-  map_data$CHR <- as.numeric(gsub("^[Cc]hr0*", "", map_data$CHR))
-  map_data$BP  <- as.numeric(map_data$BP)
+  # Normalise chromosome: strip common prefixes (Chr, chr, Chr0, chr0)
+  # to a bare integer. Non-numeric chromosomes (chrX, chrM, scaffolds)
+  # become NA; they cannot sit on the integer Manhattan axis and used
+  # to crash qqman ("'times' invalid"), so they are dropped loudly.
+  chr_raw <- as.character(map_data$CHR)
+  map_data$CHR <- suppressWarnings(as.numeric(gsub("^[Cc]hr0*", "", chr_raw)))
+  bad_chr <- is.na(map_data$CHR)
+  if (any(bad_chr)) {
+    warning(sprintf("%d SNP(s) on non-numeric chromosomes (e.g. %s) cannot be placed on the Manhattan axis and are dropped",
+                    sum(bad_chr),
+                    paste(head(unique(chr_raw[bad_chr]), 5), collapse = ", ")))
+    map_data <- map_data[!bad_chr, ]
+  }
+  map_data$BP <- suppressWarnings(as.numeric(map_data$BP))
+  bad_bp <- is.na(map_data$BP)
+  if (any(bad_bp)) {
+    warning(sprintf("%d SNP(s) with unparsable BP dropped", sum(bad_bp)))
+    map_data <- map_data[!bad_bp, ]
+  }
 
   merged_data <- merge(emmax_data, map_data, by = "SNP")
-  merged_data$P <- as.numeric(merged_data$P)
+  if (nrow(merged_data) < nrow(emmax_data)) {
+    message("[INFO] ", nrow(emmax_data) - nrow(merged_data),
+            " EMMAX SNP(s) not present in the map file.")
+  }
+  if (nrow(merged_data) < nrow(map_data)) {
+    message("[INFO] ", nrow(map_data) - nrow(merged_data),
+            " map SNP(s) not present in the EMMAX file.")
+  }
+  merged_data$P <- suppressWarnings(as.numeric(merged_data$P))
 
-  # Remove rows with missing or non-finite p-values
-  merged_data <- merged_data[!is.na(merged_data$P) & is.finite(merged_data$P), ]
+  # Remove rows with missing, non-finite or out-of-range p-values
+  # (P <= 0 would give an infinite -log10 axis).
+  bad_p <- is.na(merged_data$P) | !is.finite(merged_data$P) |
+    merged_data$P <= 0 | merged_data$P > 1
+  if (any(bad_p)) {
+    warning(sprintf("%d SNP(s) with missing or out-of-range p-values (P <= 0 or P > 1) dropped",
+                    sum(bad_p)))
+    merged_data <- merged_data[!bad_p, ]
+  }
 
   if (nrow(merged_data) == 0) {
     stop("No valid SNPs remaining after merging EMMAX and map data.")
@@ -176,7 +235,7 @@ plot_manhattan <- function(data, output_file, signif_thresh, suggest_thresh) {
     suggestiveline   = -log10(suggest_thresh),
     main = "Manhattan Plot"
   )
-  dev.off()
+  invisible(dev.off())
   message("[INFO] Manhattan plot saved.")
 }
 
@@ -187,7 +246,7 @@ plot_qq <- function(data, output_file) {
   message("[INFO] Generating QQ plot: ", output_file)
   pdf(output_file, width = plot_height, height = plot_height)
   qq(data$P, main = "QQ Plot")
-  dev.off()
+  invisible(dev.off())
   message("[INFO] QQ plot saved.")
 }
 
@@ -221,6 +280,10 @@ plot_regional_manhattan <- function(data, bed_file, extension_val, output_file) 
   region_name  <- as.character(bed_row$name)
 
   chr_num <- normalise_chr(chrom_raw)
+  if (is.na(chr_num)) {
+    stop("Regional plot requires a numeric chromosome in the BED chrom column (e.g. chr7); got: ",
+         chrom_raw)
+  }
   ext_start <- max(0, region_start - extension_val)
   ext_end   <- region_end + extension_val
 
@@ -255,10 +318,22 @@ plot_regional_manhattan <- function(data, bed_file, extension_val, output_file) 
 
   # Build Gviz GeneRegionTrack
   # Parse BED12 block structure for gene model
-  block_sizes   <- as.numeric(strsplit(as.character(bed_row$blockSizes), ",")[[1]])
-  block_starts  <- as.numeric(strsplit(as.character(bed_row$blockStarts), ",")[[1]])
-  block_sizes   <- block_sizes[!is.na(block_sizes) & block_sizes > 0]
-  block_starts  <- block_starts[!is.na(block_starts)]
+  # Parse blocks as PAIRS: filtering each vector independently used to
+  # desynchronise them when a 0-length block was present.
+  block_sizes_raw  <- strsplit(as.character(bed_row$blockSizes), ",")[[1]]
+  block_starts_raw <- strsplit(as.character(bed_row$blockStarts), ",")[[1]]
+  if (length(block_sizes_raw) != length(block_starts_raw)) {
+    warning("BED12 blockSizes and blockStarts field lengths differ; keeping the paired prefix.")
+  }
+  n_blocks <- min(length(block_sizes_raw), length(block_starts_raw))
+  block_sizes  <- suppressWarnings(as.numeric(block_sizes_raw[seq_len(n_blocks)]))
+  block_starts <- suppressWarnings(as.numeric(block_starts_raw[seq_len(n_blocks)]))
+  keep_block <- !is.na(block_sizes) & !is.na(block_starts) & block_sizes > 0
+  if (any(!keep_block)) {
+    warning(sprintf("%d BED block(s) dropped (empty or zero-length)", sum(!keep_block)))
+  }
+  block_sizes  <- block_sizes[keep_block]
+  block_starts <- block_starts[keep_block]
 
   # Construct GRanges with exon structure
   if (length(block_sizes) > 0 && length(block_starts) > 0) {
@@ -298,7 +373,7 @@ plot_regional_manhattan <- function(data, bed_file, extension_val, output_file) 
     chromosome = chrom_raw,
     main       = paste("Gene:", region_name)
   )
-  dev.off()
+  invisible(dev.off())
 
   # Read gene track PDF as image via cowplot
   p2 <- ggdraw() + draw_image(tmp_gene_file)
