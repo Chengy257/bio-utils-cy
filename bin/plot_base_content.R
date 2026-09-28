@@ -5,6 +5,29 @@
 # Description: Sliding window base composition analysis and plotting
 #              for FASTA sequences.
 # Created Time: 2026
+# Changelog:
+#   v1.1.0  2026-09-28
+#   - FIX: --cutoff/--output/--plot-width/--plot-height were declared
+#     as boolean flags (getopt argflag 0) while taking values, so
+#     "-c 50" aborted with a getopt error and a bare "--cutoff" was
+#     silently read as TRUE (reference line drawn at 1). They now
+#     require a value; when omitted, the code-side defaults apply and
+#     a bare flag is a loud getopt error.
+#   - FIX: odd window sizes analysed window_size - 1 bp (half_win =
+#     floor(w/2) built a 2*floor(w/2)-bp window). Odd windows now span
+#     the full w, centred on the position; even windows keep their
+#     previous anchoring, so existing even-window output is unchanged.
+#   - FIX: with multiple sequences and an explicit -o/--output prefix,
+#     every sequence wrote to the same files and only the last one
+#     survived. The sequence name is appended to the prefix whenever
+#     the FASTA holds more than one sequence.
+#   - CHANGE: the base-type split inside the sliding-window loop is
+#     hoisted out (computed once per sequence).
+#   - CHANGE: the statistics file extension is now .tsv (the file was
+#     always tab-delimited, never Excel).
+#   - DOCUMENTED: the denominator includes N and other ambiguous
+#     codes, i.e. the value is the fraction of the whole window.
+#   - CHANGE: INFO/WARN logs go to stderr via message().
 #########################################################################
 
 # Sliding Window Base Composition Analysis
@@ -33,10 +56,10 @@ spec <- matrix(c(
   "fasta",       "f", 2, "character", "Input FASTA file (required)",
   "base",        "b", 2, "character", "Base type to count: A, T, G, C, GC, or AT (required)",
   "window",      "w", 2, "numeric",   "Sliding window size in bp (required)",
-  "cutoff",      "c", 0, "numeric",   "Horizontal reference line threshold (default: 75)",
-  "output",      "o", 0, "character", "Output prefix (default: auto from base and sequence name)",
-  "plot-width",  "p", 0, "numeric",   "Plot width in inches (default: 6)",
-  "plot-height", "q", 0, "numeric",   "Plot height in inches (default: 3)"
+  "cutoff",      "c", 1, "numeric",   "Horizontal reference line threshold (default: 75)",
+  "output",      "o", 1, "character", "Output prefix (default: auto from base and sequence name)",
+  "plot-width",  "p", 1, "numeric",   "Plot width in inches (default: 6)",
+  "plot-height", "q", 1, "numeric",   "Plot height in inches (default: 3)"
 ), byrow = TRUE, ncol = 5)
 
 opt <- getopt(spec)
@@ -95,6 +118,17 @@ if (window_size < 1 || window_size != as.integer(window_size)) {
   stop("Window size must be a positive integer.")
 }
 
+# Guard against a bare "--cutoff" (getopt then yields TRUE, not a number)
+if (!is.numeric(cutoff_val)) {
+  stop("--cutoff needs a numeric value, e.g. --cutoff 50")
+}
+if (!is.numeric(plot_width) || plot_width <= 0) {
+  stop("--plot-width needs a positive number")
+}
+if (!is.numeric(plot_height) || plot_height <= 0) {
+  stop("--plot-height needs a positive number")
+}
+
 # -------------------------------------------------------------------------
 # Read FASTA
 # -------------------------------------------------------------------------
@@ -108,27 +142,45 @@ fasta_sequences <- tryCatch(
 
 n_seq <- length(fasta_sequences)
 if (n_seq == 0) {
-  cat("[INFO] FASTA file contains no sequences. Nothing to do.\n")
+  message("[INFO] FASTA file contains no sequences. Nothing to do.")
   quit(status = 0)
 }
 
-cat("[INFO] Loaded", n_seq, "sequence(s) from", fasta_file, "\n")
-cat("[INFO] Base type:", base_type, "| Window size:", window_size,
-    "bp | Cutoff:", cutoff_val, "%\n")
+message("[INFO] Loaded ", n_seq, " sequence(s) from ", fasta_file)
+message("[INFO] Base type: ", base_type, " | Window size: ", window_size,
+        " bp | Cutoff: ", cutoff_val, "%")
 
 # -------------------------------------------------------------------------
 # Process each sequence
 # -------------------------------------------------------------------------
 
 half_win   <- as.integer(floor(window_size / 2))
+# Window is [i - left, i + right]: for even w this keeps the historical
+# anchoring ([i - w/2, i + w/2 - 1]); for odd w it is truly centred and
+# spans the full w bp (the old floor(w/2) scheme analysed w - 1 bp).
+if (window_size %% 2 == 1) {
+  win_left  <- half_win
+  win_right <- half_win
+} else {
+  win_left  <- half_win
+  win_right <- half_win - 1L
+}
 processed  <- 0
 skipped    <- 0
 
 for (j in seq_len(n_seq)) {
   seq_name <- names(fasta_sequences)[j]
   seq_len  <- length(fasta_sequences[[j]])
+  # With an explicit -o prefix and multiple sequences, every sequence
+  # used to write to the same files (only the last survived); append
+  # the sequence name to keep each sequence's outputs distinct.
   out_prefix <- if (!is.null(opt$output)) {
-    opt$output
+    if (n_seq > 1) {
+      paste0(opt$output, "_",
+             gsub("[^A-Za-z0-9._-]+", "_", seq_name))
+    } else {
+      opt$output
+    }
   } else {
     paste0(base_type, "_", gsub("[[:space:]]+", "_", seq_name),
            "_window", window_size)
@@ -136,32 +188,31 @@ for (j in seq_len(n_seq)) {
 
   # Edge case: window larger than sequence
   if (window_size > seq_len) {
-    cat("[WARN] Skipping '", seq_name, "' (length ", seq_len,
-        " bp): window size (", window_size, " bp) exceeds sequence length.\n",
-        sep = "")
+    message("[WARN] Skipping '", seq_name, "' (length ", seq_len,
+          " bp): window size (", window_size, " bp) exceeds sequence length.")
     skipped <- skipped + 1
     next
   }
 
-  cat("[INFO] Processing sequence ", j, "/", n_seq, ": ", seq_name,
-      " (", seq_len, " bp)\n", sep = "")
+  message("[INFO] Processing sequence ", j, "/", n_seq, ": ", seq_name,
+        " (", seq_len, " bp)")
 
   # Compute sliding window base content
-  seq_start <- half_win + 1
-  seq_end   <- seq_len - half_win + 1
+  seq_start <- win_left + 1
+  seq_end   <- seq_len - win_right
   positions <- seq_start:seq_end
+  target_bases <- if (base_type %in% c("GC", "AT")) strsplit(base_type, "")[[1]] else base_type
 
   base_content <- numeric(seq_len)  # pre-allocate full length, subset later
   for (i in positions) {
-    win_start <- i - half_win
-    win_end   <- i + half_win - 1
+    win_start <- i - win_left
+    win_end   <- i + win_right
     window_seq <- subseq(fasta_sequences[[j]], start = win_start, end = win_end)
 
     if (base_type %in% c("GC", "AT")) {
       # For compound base types, sum individual base frequencies
-      bases <- strsplit(base_type, "")[[1]]
       freq_sum <- 0
-      for (b in bases) {
+      for (b in target_bases) {
         freq_sum <- freq_sum + letterFrequency(window_seq, b, as.prob = TRUE)[[1]]
       }
       base_content[i] <- round(freq_sum * 100, 2)
@@ -185,10 +236,10 @@ for (j in seq_len(n_seq)) {
   )
 
   # Write statistics table
-  tsv_file <- paste0(out_prefix, "_statistics_table.xls")
+  tsv_file <- paste0(out_prefix, "_statistics_table.tsv")
   write.table(data, file = tsv_file, sep = "\t",
               col.names = TRUE, row.names = FALSE, quote = FALSE)
-  cat("[INFO]   Wrote statistics: ", tsv_file, "\n", sep = "")
+  message("[INFO]   Wrote statistics: ", tsv_file)
 
   # Generate line plot
   p <- ggplot(data, aes(x = index, y = Content)) +
@@ -211,7 +262,7 @@ for (j in seq_len(n_seq)) {
   pdf_file <- paste0(out_prefix, "_plot.pdf")
   ggsave(filename = pdf_file, plot = p, width = plot_width,
          height = plot_height, device = "pdf")
-  cat("[INFO]   Wrote plot: ", pdf_file, "\n", sep = "")
+  message("[INFO]   Wrote plot: ", pdf_file)
 
   processed <- processed + 1
 }
@@ -220,10 +271,11 @@ for (j in seq_len(n_seq)) {
 # Summary
 # -------------------------------------------------------------------------
 
-cat("\n[INFO] ===== Summary =====\n")
-cat("[INFO] Total sequences in FASTA: ", n_seq, "\n", sep = "")
-cat("[INFO] Successfully processed:    ", processed, "\n", sep = "")
+message("")
+message("[INFO] ===== Summary =====")
+message("[INFO] Total sequences in FASTA: ", n_seq)
+message("[INFO] Successfully processed:    ", processed)
 if (skipped > 0) {
-  cat("[WARN] Skipped (window > seq):   ", skipped, "\n", sep = "")
+  message("[WARN] Skipped (window > seq):    ", skipped)
 }
-cat("[INFO] Done.\n")
+message("[INFO] Done.")
