@@ -7,6 +7,23 @@
 #              filtering, standardization, and fuzzy c-means clustering,
 #              then outputs cluster membership table and plot.
 # Created Time: 2026
+# Changelog:
+#   v1.1.0  2026-09-28
+#   - FIX: filter.std() kept its default visu = TRUE, which draws the
+#     standard-deviation histogram before any PDF device is open - a
+#     stray Rplots.pdf appeared in the working directory (or an error
+#     on headless devices). Plotting is now disabled.
+#   - FIX: duplicated sample column names are rejected (check.names =
+#     FALSE previously let identical time points through silently).
+#   - FIX: -k/--clusters must be >= 2 (mfuzz requires at least two
+#     clusters).
+#   - FIX: mfuzz.plot2 was called with its default x11 = TRUE, which
+#     opens an interactive X11 window instead of drawing to the PDF
+#     device - the plot could never be produced on a headless server.
+#     It now draws to the PDF (x11 = FALSE).
+#   - DOCUMENTED: filter.NA drops genes with more than 25% missing
+#     values (Mfuzz default threshold).
+#   - CHANGE: dev.off() is silent.
 #########################################################################
 
 suppressMessages(library(Mfuzz))
@@ -63,6 +80,9 @@ if (is.null(opt$output)) {
 if (!file.exists(opt$input)) {
     stop(paste("Error: Input file not found:", opt$input))
 }
+if (length(opt$clusters) != 1 || is.na(opt$clusters) || opt$clusters < 2) {
+    stop("Error: -k/--clusters must be an integer >= 2.")
+}
 
 ## ---- Set defaults ----
 min_std    <- if (is.null(opt[["min-std"]]))    0     else opt[["min-std"]]
@@ -83,6 +103,11 @@ run_mfuzz <- function(input_file, cluster_num, out_prefix,
     if (ncol(raw_dat) < 2) {
         stop("Error: Expression matrix must have at least 2 sample columns.")
     }
+    if (anyDuplicated(colnames(raw_dat))) {
+        stop("Error: duplicated sample column names in the expression matrix: ",
+             paste(unique(colnames(raw_dat)[duplicated(colnames(raw_dat))]),
+                   collapse = ", "))
+    }
     if (nrow(raw_dat) < cluster_num) {
         stop("Error: Number of genes (", nrow(raw_dat),
              ") must be >= number of clusters (", cluster_num, ").")
@@ -94,13 +119,15 @@ run_mfuzz <- function(input_file, cluster_num, out_prefix,
     expr_mat <- as.matrix(raw_dat)
     eset <- Biobase::ExpressionSet(assayData = expr_mat)
 
-    # Filter NA values
-    message("Filtering NA values...")
+    # Filter NA values: Mfuzz default thres = 0.25 removes genes with
+    # more than 25% missing values
+    message("Filtering NA values (genes with > 25% missing values are dropped)...")
     eset <- Mfuzz::filter.NA(eset)
 
-    # Filter by standard deviation
+    # Filter by standard deviation (visu = FALSE: the histogram would
+    # otherwise be drawn on a device that is not open yet)
     message("Filtering by minimum standard deviation: ", min.std)
-    eset <- Mfuzz::filter.std(eset, min.std = min.std)
+    eset <- Mfuzz::filter.std(eset, min.std = min.std, visu = FALSE)
 
     gene_count <- nrow(Biobase::exprs(eset))
     if (gene_count < cluster_num) {
@@ -126,8 +153,12 @@ run_mfuzz <- function(input_file, cluster_num, out_prefix,
     plot_file <- paste0(out_prefix, "_MfuzzPlot.pdf")
     message("Writing cluster plot: ", plot_file)
     pdf(plot_file, width = plot.width, height = plot.height)
-    Mfuzz::mfuzz.plot2(eset, cl, xlab = "Sample", ylab = "Expression")
-    dev.off()
+    # x11 = FALSE: the default opens an interactive X11 window instead
+    # of drawing to the open PDF device (the script could never produce
+    # its plot on a headless server without this)
+    Mfuzz::mfuzz.plot2(eset, cl, xlab = "Sample", ylab = "Expression",
+                       x11 = FALSE)
+    invisible(dev.off())
 
     # --- Output 2: Cluster membership table ---
     membership_file <- paste0(out_prefix, "_Mfuzz_clusterMembership.tsv")
