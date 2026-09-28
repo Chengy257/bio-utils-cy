@@ -8,6 +8,17 @@
 #              gracefully. Optional sample-group annotation is displayed
 #              as a top column bar.
 # Created Time: 2026
+# Changelog:
+#   v1.1.0  2026-09-28
+#   - FIX: group labels were not whitespace-trimmed, so a CRLF group
+#     file put a \r into every legend level. Labels are trimmed and
+#     empty lines dropped now.
+#   - FIX: the NA notice counted affected CELLS while whole ROWS were
+#     removed; it now reports both (cells and rows dropped).
+#   - CHANGE: INFO/summary logs go to stderr via message(); dev.off()
+#     is silent.
+#   - DOCUMENTED: logical options take a value as "--opt TRUE"
+#     (the "--opt=TRUE" form triggers a bug inside getopt itself).
 #########################################################################
 
 suppressMessages(library(getopt))
@@ -40,6 +51,7 @@ if (!is.null(opt$help)) {
         flag <- paste0("-", spec[i, "short"], ", --", spec[i, "long"])
         cat(sprintf("  %-30s %s\n", flag, spec[i, "help"]))
     }
+    cat("\nLogical options take a value as \"--opt TRUE\" (space form).\n")
     cat("\nExamples:\n")
     cat("  Rscript plot_heatmap_single.R -d expr_matrix.tsv -o result\n")
     cat("  Rscript plot_heatmap_single.R -d expr.tsv -g groups.txt --column-cluster TRUE\n")
@@ -92,17 +104,21 @@ dat_scaled <- t(scale(t(as.matrix(dat))))
 
 # Handle NA from constant rows (sd = 0 => z-score = NaN)
 if (anyNA(dat_scaled)) {
-    n_na <- sum(is.na(dat_scaled))
-    warning(sprintf("Removed %d NA values (likely from constant rows with zero variance).", n_na))
+    n_na_cells <- sum(is.na(dat_scaled))
+    n_rows_before <- nrow(dat_scaled)
     dat_scaled <- na.omit(dat_scaled)
+    message(sprintf("Note: %d NA cell(s) (likely from constant rows with zero variance) caused %d row(s) to be removed.",
+                    n_na_cells, n_rows_before - nrow(dat_scaled)))
 }
 
 # Handle Inf values
 if (any(is.infinite(dat_scaled))) {
     n_inf <- sum(is.infinite(dat_scaled))
-    warning(sprintf("Replaced %d Inf values with NA and removed affected rows.", n_inf))
+    n_rows_before <- nrow(dat_scaled)
     dat_scaled[is.infinite(dat_scaled)] <- NA
     dat_scaled <- na.omit(dat_scaled)
+    message(sprintf("Note: %d Inf value(s) replaced with NA; %d row(s) removed.",
+                    n_inf, n_rows_before - nrow(dat_scaled)))
 }
 
 if (nrow(dat_scaled) == 0) {
@@ -114,7 +130,8 @@ colnames(dat_scaled) <- colnames(dat)
 
 kept_rows <- nrow(dat_scaled)
 if (kept_rows < original_nrow) {
-    warning(sprintf("Retained %d of %d rows after scaling and filtering.", kept_rows, original_nrow))
+    message(sprintf("Note: retained %d of %d rows after scaling and filtering.",
+                    kept_rows, original_nrow))
 }
 
 # ── Read sample groups (optional) ─────────────────────────────────────
@@ -126,12 +143,13 @@ if (!is.null(opt$groups)) {
         stop(paste0("Error: group file not found: ", opt$groups))
     }
     groups <- tryCatch(
-        readLines(opt$groups),
+        readLines(opt$groups, warn = FALSE),
         error = function(e) {
             stop(paste0("Error reading group file: ", e$message))
         }
     )
-    # Strip empty lines
+    # Trim whitespace/CR and strip empty lines
+    groups <- trimws(groups)
     groups <- groups[groups != ""]
     if (length(groups) != ncol(dat_scaled)) {
         stop(sprintf(
@@ -196,17 +214,17 @@ pdf(file = pdf_path, height = plot_height, width = plot_width)
 tryCatch(
     {
         draw(hm)
-        cat(sprintf("Heatmap saved to %s\n", pdf_path))
-        cat(sprintf("  Rows (genes):   %d / %d retained\n", kept_rows, original_nrow))
-        cat(sprintf("  Columns (samples): %d\n", ncol(dat_scaled)))
+        message(sprintf("Heatmap saved to %s", pdf_path))
+        message(sprintf("  Rows (genes):   %d / %d retained", kept_rows, original_nrow))
+        message(sprintf("  Columns (samples): %d", ncol(dat_scaled)))
         if (!is.null(opt$groups)) {
-            cat(sprintf("  Groups: %s\n", paste(unique(groups), collapse = ", ")))
+            message(sprintf("  Groups: %s", paste(unique(groups), collapse = ", ")))
         }
     },
     error = function(e) {
         stop(paste0("Error drawing heatmap: ", e$message))
     },
     finally = {
-        dev.off()
+        invisible(dev.off())
     }
 )
