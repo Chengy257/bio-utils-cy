@@ -6,6 +6,26 @@
 #              CDS regions, and introns (with strand-direction arrows)
 #              for specified genes in a clean publication-ready PDF.
 # Created Time: 2026
+# Changelog:
+#   v1.1.0  2026-09-28
+#   - FIX: a GTF without a "gene_id" attribute crashed with the cryptic
+#     "arguments imply differing number of rows" while building the
+#     exon data frame. The attribute is now checked up front with a
+#     clear message.
+#   - FIX: GTFs with no CDS features crashed the same way (a constant
+#     "CDS" column cannot be mixed with zero-length columns in the
+#     empty data.frame); the empty case now builds all zero-row
+#     columns.
+#   - FIX: --genes entries are trimmed and empty tokens dropped, so
+#     "G1, G2" no longer fails to match " G2".
+#   - FIX: the multi-chromosome check fired whenever two different
+#     genes sat on different chromosomes (harmless - rows are
+#     independent) and skipped the real hazard. It now warns only when
+#     a single gene's own exons span more than one chromosome, which
+#     genuinely mixes coordinates on one row.
+#   - CHANGE: intron arrows are drawn in two vectorised layers
+#     (plus/minus strand) instead of one ggplot layer per intron.
+#   - CHANGE: dev.off() is silent.
 #########################################################################
 
 suppressMessages(library(ggplot2))
@@ -80,7 +100,10 @@ if (!file.exists(opts$gtf)) {
 }
 
 # Apply defaults for optional arguments
-gene_filter   <- if (is.null(opts$genes))       NULL    else strsplit(opts$genes, ",")[[1]]
+gene_filter   <- if (is.null(opts$genes)) NULL else {
+                  gs <- trimws(strsplit(opts$genes, ",")[[1]])
+                  gs[gs != ""]
+                }
 exon_color    <- if (is.null(opts$`exon-color`)) "white" else opts$`exon-color`
 cds_color     <- if (is.null(opts$`cds-color`))  "blue"  else opts$`cds-color`
 intron_color  <- if (is.null(opts$`intron-color`)) "black" else opts$`intron-color`
@@ -155,16 +178,17 @@ build_gene_structure_plot <- function(plot_data, gene_labels,
   # Build ggplot
   p <- ggplot()
 
-  # Introns as arrowed segments
+  # Introns as arrowed segments: two vectorised layers (plus strand
+  # arrows point downstream, minus strand upstream) instead of one
+  # layer per intron.
   if (nrow(intron_plot) > 0) {
-    for (i in seq_len(nrow(intron_plot))) {
-      row <- intron_plot[i, ]
+    for (dir in c("last", "first")) {
+      seg <- intron_plot[intron_plot$arrow_ends == dir, , drop = FALSE]
+      if (nrow(seg) == 0) next
       p <- p + geom_segment(
-        data = row,
+        data = seg,
         aes(x = .data$start, xend = .data$end, y = .data$y, yend = .data$y),
-        arrow = arrow(length = unit(0.1, "inches"),
-                      ends = row$arrow_ends,
-                      type = "open"),
+        arrow = arrow(length = unit(0.1, "inches"), ends = dir, type = "open"),
         color = intron_color,
         linewidth = 0.4
       )
@@ -235,6 +259,10 @@ main <- function() {
     }
   )
 
+  if (!"gene_id" %in% colnames(mcols(gtf_data))) {
+    stop("GTF file has no 'gene_id' attribute; features cannot be grouped by gene.")
+  }
+
   # Extract exons and CDS
   exons <- gtf_data[gtf_data$type == "exon", ]
   cds   <- gtf_data[gtf_data$type == "CDS", ]
@@ -253,14 +281,21 @@ main <- function() {
     stringsAsFactors = FALSE
   )
 
-  cds_df <- data.frame(
-    gene_id = if (length(cds) > 0) cds$gene_id else character(0),
-    start   = if (length(cds) > 0) start(cds)   else integer(0),
-    end     = if (length(cds) > 0) end(cds)     else integer(0),
-    type    = "CDS",
-    strand  = if (length(cds) > 0) as.character(strand(cds)) else character(0),
-    stringsAsFactors = FALSE
-  )
+  cds_df <- if (length(cds) > 0) {
+    data.frame(
+      gene_id = cds$gene_id,
+      start   = start(cds),
+      end     = end(cds),
+      type    = "CDS",
+      strand  = as.character(strand(cds)),
+      stringsAsFactors = FALSE
+    )
+  } else {
+    # all zero-row columns: mixing a constant with them would fail
+    data.frame(gene_id = character(0), start = numeric(0), end = numeric(0),
+               type = character(0), strand = character(0),
+               stringsAsFactors = FALSE)
+  }
 
   # Filter to requested genes
   if (!is.null(gene_filter)) {
@@ -277,24 +312,18 @@ main <- function() {
     }
   }
 
-  # Check for multi-chromosome genes
-  if (!is.null(seqnames(exons))) {
-    chrom_map <- data.frame(
-      gene_id    = exons$gene_id,
-      seqname    = as.character(seqnames(exons)),
-      stringsAsFactors = FALSE
-    )
-    unique_chroms <- unique(chrom_map$seqname)
-    genes_in_plot <- unique(exons_df$gene_id)
-    gene_chroms <- unique(chrom_map[chrom_map$gene_id %in% genes_in_plot, "seqname"])
-
-    if (length(gene_chroms) > 1) {
-      warning(
-        "Genes span multiple chromosomes (",
-        paste(gene_chroms, collapse = ", "),
-        "). Plotting all on same axis; positions may not reflect true genomic context."
-      )
-    }
+  # Warn only about genes whose OWN exons span several chromosomes:
+  # different chromosomes across different genes are fine (each gene
+  # gets its own row), but one gene mixing chromosomes genuinely
+  # garbles its coordinates on the shared x axis.
+  genes_in_plot <- unique(exons_df$gene_id)
+  n_chr_per_gene <- tapply(as.character(seqnames(exons)), exons$gene_id,
+                           function(x) length(unique(x)))
+  multi_chr <- intersect(names(n_chr_per_gene)[n_chr_per_gene > 1],
+                         genes_in_plot)
+  if (length(multi_chr) > 0) {
+    warning("Gene(s) span multiple chromosomes and will be mixed on one axis: ",
+            paste(multi_chr, collapse = ", "))
   }
 
   # Compute introns
@@ -335,7 +364,7 @@ main <- function() {
   message("Writing output to: ", opts$output)
   pdf(opts$output, width = plot_width, height = plot_height)
   print(p)
-  dev.off()
+  invisible(dev.off())
 
   message("Done.")
 }
