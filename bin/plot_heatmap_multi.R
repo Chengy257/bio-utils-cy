@@ -9,6 +9,15 @@
 #              multi-panel PDF. Cluster names are extracted from the
 #              second field of each filename when split by ".".
 # Created Time: 2026
+# Changelog:
+#   v1.1.0  2026-09-28
+#   - CHANGE: INFO/summary logs and row-filtering notices go to stderr
+#     via message(); stdout stays reserved for data; dev.off() is
+#     silent.
+#   - DOCUMENTED: rows containing NA (or constant rows, which give NaN
+#     z-scores) are dropped per panel before clustering, so the row
+#     sets of individual panels can differ between panels and from the
+#     input matrices.
 #########################################################################
 
 suppressMessages(library(getopt))
@@ -136,14 +145,14 @@ scale_rows <- function(mat) {
     # Replace Inf with NA
     if (any(is.infinite(scaled))) {
         n_inf <- sum(is.infinite(scaled))
-        warning(sprintf("Replaced %d Inf values with NA.", n_inf))
+        message(sprintf("Note: replaced %d Inf values with NA.", n_inf))
         scaled[is.infinite(scaled)] <- NA
     }
 
     # Omit rows with any NA (constant rows produce NaN)
     if (anyNA(scaled)) {
         n_na <- sum(is.na(scaled))
-        warning(sprintf("Removed rows containing %d NA values (likely from constant rows).", n_na))
+        message(sprintf("Note: removed %d row(s) containing NA/NaN z-scores (e.g. constant rows); this panel keeps fewer rows than the input.", n_na))
         scaled <- na.omit(scaled)
     }
 
@@ -171,7 +180,7 @@ for (i in seq_len(n_panels)) {
     filepath <- filepaths[i]
     cluster_name <- extract_cluster_name(filepath)
 
-    cat(sprintf("[%d/%d] Processing: %s (cluster: %s)\n", i, n_panels, filepath, cluster_name))
+    message(sprintf("[%d/%d] Processing: %s (cluster: %s)", i, n_panels, filepath, cluster_name))
 
     # Read expression matrix
     dat <- tryCatch(
@@ -213,7 +222,7 @@ for (i in seq_len(n_panels)) {
     kept_rows <- nrow(dat_scaled)
 
     if (kept_rows < original_nrow) {
-        cat(sprintf("  Retained %d of %d rows after scaling.\n", kept_rows, original_nrow))
+        message(sprintf("  Retained %d of %d rows after scaling.", kept_rows, original_nrow))
     }
 
     # Annotations
@@ -262,8 +271,8 @@ for (i in seq_len(n_panels)) {
             stop(paste0("Error writing individual PDF '", single_pdf, "': ", e$message))
         }
     )
-    cat(sprintf("  Individual heatmap saved: %s (%d rows x %d cols)\n",
-                single_pdf, kept_rows, ncol(dat_scaled)))
+    message(sprintf("  Individual heatmap saved: %s (%d rows x %d cols)",
+                    single_pdf, kept_rows, ncol(dat_scaled)))
 
     # Panel for combined plot (no row names to save space)
     # First panel keeps top_annotation with group legend; subsequent panels omit it
@@ -328,9 +337,9 @@ tryCatch(
 )
 
 # -- Summary -------------------------------------------------------------
-cat(sprintf("\n=== Summary ===\n"))
-cat(sprintf("Panels plotted: %d\n", length(panel_info)))
-cat(paste(panel_info, collapse = "\n"), "\n")
-cat(sprintf("Individual PDFs: %s_*_Single_Heatmap.pdf\n", opt$output))
-cat(sprintf("Combined PDF:   %s\n", multi_pdf))
-cat(sprintf("Color scheme:   %s\n", color_scheme))
+message(sprintf("\n=== Summary ==="))
+message(sprintf("Panels plotted: %d", length(panel_info)))
+message(paste(panel_info, collapse = "\n"))
+message(sprintf("Individual PDFs: %s_*_Single_Heatmap.pdf", opt$output))
+message(sprintf("Combined PDF:   %s", multi_pdf))
+message(sprintf("Color scheme:   %s", color_scheme))
