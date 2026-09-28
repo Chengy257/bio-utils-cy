@@ -7,6 +7,19 @@
 #              alleles against reference, generate chromatogram PDF and
 #              pairwise alignment text files.
 # Created Time: 2026
+# Changelog:
+#   v1.1.0  2026-09-28
+#   - FIX: the batch run always exited 0 even when every .ab1 file
+#     failed to parse; it now exits 1 when no file succeeded (partial
+#     success still exits 0 with the counts in the summary).
+#   - FIX: --signal-cutoff was passed to makeBaseCalls unchecked; it
+#     must lie in (0, 1). --trim5 must be a non-negative integer.
+#   - FIX: the chromatogram PDF device was 100 x 1 inches (an
+#     unprintable, unviewable strip); it is now 14 x 4 inches. The
+#     number of bases per chromatogram page is unchanged.
+#   - DOCUMENTED: when allele phasing fails, the pairwise alignment
+#     files are skipped for that trace (only the chromatogram is
+#     written).
 #########################################################################
 
 suppressMessages(library(sangerseqR))
@@ -41,6 +54,9 @@ if (!is.null(opt$help)) {
     cat("  {basename}_chromatogram.pdf\n")
     cat("  {basename}_pairwiseAlignment_ref.txt\n")
     cat("  {basename}_pairwiseAlignment_allele.txt\n\n")
+    cat("When allele phasing fails for a trace, only the chromatogram is\n")
+    cat("written (the pairwise alignment files are skipped).\n")
+    cat("The script exits 1 if no .ab1 file could be processed.\n\n")
     cat("Example:\n")
     cat("  Rscript batch_parse_sanger.R -r reference.txt -i traces/ -o results/\n")
     quit(status = 0)
@@ -59,6 +75,15 @@ input_dir   <- if (is.null(opt[["input-dir"]]))    "."      else opt[["input-dir
 signal_cut  <- if (is.null(opt[["signal-cutoff"]])) 0.33    else opt[["signal-cutoff"]]
 trim5_val   <- if (is.null(opt$trim5))              20      else opt$trim5
 output_dir  <- if (is.null(opt[["output-dir"]]))    "."      else opt[["output-dir"]]
+
+if (!is.numeric(signal_cut) || length(signal_cut) != 1 ||
+    is.na(signal_cut) || signal_cut <= 0 || signal_cut >= 1) {
+    stop("Error: --signal-cutoff must be a number strictly between 0 and 1.")
+}
+if (!is.numeric(trim5_val) || length(trim5_val) != 1 ||
+    is.na(trim5_val) || trim5_val < 0 || trim5_val != as.integer(trim5_val)) {
+    stop("Error: --trim5 must be a non-negative integer.")
+}
 
 if (!dir.exists(input_dir)) {
     stop(paste("Error: Input directory not found:", input_dir))
@@ -124,7 +149,7 @@ parse_single_sanger <- function(ab1_path, ref_seq, signal_cutoff,
     chromo_file <- file.path(out_dir, paste0(basename_str, "_chromatogram.pdf"))
     message("  Writing chromatogram: ", chromo_file)
     tryCatch({
-        pdf(chromo_file, width = 100, height = 1)
+        pdf(chromo_file, width = 14, height = 4)
         sangerseqR::chromatogram(basecalls, trim5 = trim5,
                                  width = 100, height = 1,
                                  showcalls = "both")
@@ -207,3 +232,6 @@ message("=== Summary ===")
 message(sprintf("Processed: %d / %d files successfully",
                 success_count, length(ab1_files)))
 message("Output directory: ", normalizePath(output_dir))
+if (success_count == 0) {
+    stop("No .ab1 file was processed successfully.")
+}
