@@ -7,6 +7,22 @@
 #              gene ID per line, no header), builds an UpSetR plot from
 #              the union of all sets, and writes a PDF.
 # Created Time: 2026
+# Changelog:
+#   v1.1.0  2026-09-28
+#   - FIX: gene IDs were not whitespace-trimmed, so CRLF lists kept a
+#     trailing \r on every ID: against an LF list the intersection was
+#     empty (a silently meaningless plot) and a "\r"-only line became
+#     a fake gene. All IDs are trimmed and empty lines dropped now.
+#   - FIX: set names came from the file basename without extension, so
+#     identically named lists in different directories silently
+#     overwrote each other and the plot showed fewer sets. Duplicate
+#     names are disambiguated (_2, _3, ...) with a warning.
+#   - FIX: when more intersections exist than --n-intersects displays,
+#     UpSetR just cuts; the number of hidden intersections is now
+#     reported.
+#   - CHANGE: the file list is read with readLines (paths containing
+#     whitespace no longer break parsing); logs go to stderr via
+#     message(); dev.off() is silent.
 #########################################################################
 
 suppressMessages(library(getopt))
@@ -75,7 +91,10 @@ if (!order_by %in% c("degree", "freq")) {
 
 # -- Read file list ------------------------------------------------------
 filepaths <- tryCatch(
-    read.table(opt$input, header = FALSE, stringsAsFactors = FALSE)[, 1],
+    {
+        fps <- trimws(readLines(opt$input, warn = FALSE))
+        fps[fps != ""]
+    },
     error = function(e) {
         stop(paste0("Error reading input file list: ", e$message))
     }
@@ -98,11 +117,20 @@ empty_files <- character(0)
 
 for (fp in filepaths) {
     set_name <- tools::file_path_sans_ext(basename(fp))
+    # Identical basenames previously overwrote each other silently.
+    if (!is.null(gene_lists[[set_name]])) {
+        suffix <- 2
+        while (!is.null(gene_lists[[paste0(set_name, "_", suffix)]])) {
+            suffix <- suffix + 1
+        }
+        warning(paste0("Duplicate set name '", set_name, "' from '", fp,
+                       "' renamed to '", set_name, "_", suffix, "'"))
+        set_name <- paste0(set_name, "_", suffix)
+    }
     genes <- tryCatch(
         {
-            lines <- readLines(fp)
-            lines <- lines[lines != ""]
-            lines
+            lines <- trimws(readLines(fp, warn = FALSE))
+            lines[lines != ""]
         },
         error = function(e) {
             warning(paste0("Warning: could not read '", fp, "': ", e$message))
@@ -117,7 +145,7 @@ for (fp in filepaths) {
     }
 
     gene_lists[[set_name]] <- unique(genes)
-    cat(sprintf("  Read %d unique genes from: %s\n", length(gene_lists[[set_name]]), fp))
+    message(sprintf("  Read %d unique genes from: %s", length(gene_lists[[set_name]]), fp))
 }
 
 if (length(gene_lists) < 2) {
@@ -125,19 +153,19 @@ if (length(gene_lists) < 2) {
 }
 
 if (length(empty_files) > 0) {
-    cat(sprintf("Warning: %d gene-list file(s) were empty and skipped.\n", length(empty_files)))
+    message(sprintf("Warning: %d gene-list file(s) were empty and skipped.", length(empty_files)))
 }
 
 # -- Compute summary statistics ------------------------------------------
 all_genes <- unique(unlist(gene_lists))
 n_sets <- length(gene_lists)
 
-cat(sprintf("\n=== Summary ===\n"))
-cat(sprintf("Number of sets:        %d\n", n_sets))
-cat(sprintf("Total unique genes:    %d\n", length(all_genes)))
-cat(sprintf("Set sizes:\n"))
+message(sprintf("\n=== Summary ==="))
+message(sprintf("Number of sets:        %d", n_sets))
+message(sprintf("Total unique genes:    %d", length(all_genes)))
+message(sprintf("Set sizes:"))
 for (nm in names(gene_lists)) {
-    cat(sprintf("  %-30s %d genes\n", nm, length(gene_lists[[nm]])))
+    message(sprintf("  %-30s %d genes", nm, length(gene_lists[[nm]])))
 }
 
 # -- Generate UpSet plot -------------------------------------------------
@@ -145,9 +173,20 @@ output_pdf <- paste0(opt$output, "_upset_plot.pdf")
 
 tryCatch(
     {
+        membership <- UpSetR::fromList(gene_lists)
+        # Report intersections hidden by the nintersects cut-off
+        patterns <- apply(membership[, names(gene_lists), drop = FALSE], 1,
+                          paste, collapse = "")
+        all_zero <- paste(rep("0", n_sets), collapse = "")
+        n_total_intersects <- sum(table(patterns)[names(table(patterns)) != all_zero])
+        if (n_total_intersects > n_intersects) {
+            message(sprintf("Note: %d intersections exist; showing the %d largest (--n-intersects).",
+                            n_total_intersects, n_intersects))
+        }
+
         pdf(file = output_pdf, width = plot_width, height = plot_height)
         upset(
-            fromList(gene_lists),
+            membership,
             nsets       = n_sets,
             nintersects = n_intersects,
             order.by    = order_by,
@@ -158,7 +197,7 @@ tryCatch(
             point.size  = 3.5,
             line.size   = 1.0
         )
-        dev.off()
+        invisible(dev.off())
     },
     error = function(e) {
         if (dev.cur() > 1) dev.off()
@@ -166,6 +205,6 @@ tryCatch(
     }
 )
 
-cat(sprintf("\nUpSet plot saved: %s\n", output_pdf))
-cat(sprintf("Parameters: n-intersects=%d, order-by=%s, width=%.1f, height=%.1f\n",
-            n_intersects, order_by, plot_width, plot_height))
+message(sprintf("\nUpSet plot saved: %s", output_pdf))
+message(sprintf("Parameters: n-intersects=%d, order-by=%s, width=%.1f, height=%.1f",
+                n_intersects, order_by, plot_width, plot_height))
