@@ -1,6 +1,10 @@
 """Functional tests for bin/peptide_properties.py."""
 
-from common import ScriptTestCase
+import importlib.util
+import os
+from pathlib import Path
+
+from common import BIN, ScriptTestCase
 
 
 class PeptidePropertiesTest(ScriptTestCase):
@@ -73,6 +77,28 @@ class PeptidePropertiesTest(ScriptTestCase):
         out = self.tmp / "props.tsv"
         proc = self.run_script("peptide_properties.py", "-i", self.tmp / "no.fa", "-o", out)
         self.assertEqual(proc.returncode, 1)
+
+    def test_threads_default_reads_buc_threads(self):
+        # Regression: --threads was hardcoded to 4 and ignored BUC_THREADS.
+        spec = importlib.util.spec_from_file_location(
+            "peptide_properties", Path(BIN) / "peptide_properties.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        saved = os.environ.pop("BUC_THREADS", None)
+        try:
+            os.environ["BUC_THREADS"] = "6"
+            parser = mod.build_parser()
+            self.assertEqual(
+                parser.parse_args(["-i", "a", "-o", "b"]).threads, 6)
+            os.environ["BUC_THREADS"] = ""
+            parser = mod.build_parser()
+            self.assertEqual(
+                parser.parse_args(["-i", "a", "-o", "b"]).threads, 4)
+        finally:
+            if saved is None:
+                os.environ.pop("BUC_THREADS", None)
+            else:
+                os.environ["BUC_THREADS"] = saved
 
 
 if __name__ == "__main__":

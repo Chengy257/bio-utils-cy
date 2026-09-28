@@ -7,6 +7,9 @@
 # Created Time: 2026
 #
 # Changelog:
+#   v1.1.1  2026-09-28
+#   - FIX: --threads now defaults to $BUC_THREADS from config/env.sh when
+#     set (was hardcoded 4).
 #   v1.1.0  2026-09-25
 #   - FIX: output rows are now written in FASTA input order; rows were
 #     previously emitted in thread-completion order (non-deterministic).
@@ -27,11 +30,12 @@ Author: ChengYu
 Created Time: 2026
 """
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 import argparse
 import csv
 import logging
+import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -238,9 +242,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-i", "--input", required=True, help="Input FASTA file.")
     parser.add_argument("-o", "--output", required=True, help="Output TSV file.")
     parser.add_argument("--visualize", action="store_true", help="Generate property distribution plots.")
-    parser.add_argument("--threads", type=int, default=4,
-                        help="Number of parallel threads (default: 4). Little "
-                             "speedup expected: the analysis is pure Python.")
+    parser.add_argument("--threads", type=int,
+                        default=int(os.environ.get("BUC_THREADS", "4") or 4),
+                        help="Number of parallel threads (default: BUC_THREADS "
+                             "or 4). Little speedup expected: the analysis is "
+                             "pure Python.")
     return parser
 
 
