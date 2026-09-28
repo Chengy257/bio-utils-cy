@@ -6,9 +6,12 @@ BED12 output can be derived by inspection. Key assertions: minus-strand
 input, and non-coding row skipping.
 """
 
+import importlib.util
+import os
 import unittest
+from pathlib import Path
 
-from common import ScriptTestCase
+from common import BIN, ScriptTestCase
 
 # Standard 10-column genePred rows.
 GP_PLUS = (
@@ -155,6 +158,33 @@ class GenepredUtrToBed12Test(ScriptTestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertTrue((self.tmp / "utr_5UTR").exists())
         self.assertTrue((self.tmp / "utr_3UTR").exists())
+
+    def test_threads_zero_rejected(self):
+        proc, _ = self._run(GP_PLUS, extra_args=("--threads", "0"))
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("--threads must be >= 1", proc.stderr)
+
+    def test_threads_default_reads_buc_threads(self):
+        # Regression: --threads was hardcoded to 1 and ignored BUC_THREADS.
+        spec = importlib.util.spec_from_file_location(
+            "genepred_utr_to_bed12", Path(BIN) / "genepred_utr_to_bed12.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        saved = os.environ.pop("BUC_THREADS", None)
+        try:
+            os.environ["BUC_THREADS"] = "3"
+            parser = mod.build_parser()
+            self.assertEqual(
+                parser.parse_args(["-i", "a", "-o", "b"]).threads, 3)
+            os.environ["BUC_THREADS"] = ""
+            parser = mod.build_parser()
+            self.assertEqual(
+                parser.parse_args(["-i", "a", "-o", "b"]).threads, 1)
+        finally:
+            if saved is None:
+                os.environ.pop("BUC_THREADS", None)
+            else:
+                os.environ["BUC_THREADS"] = saved
 
 
 if __name__ == "__main__":

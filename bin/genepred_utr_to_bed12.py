@@ -7,6 +7,9 @@
 # Created Time: 2026
 #
 # Changelog:
+#   v1.1.1  2026-09-28
+#   - FIX: --threads now defaults to $BUC_THREADS from config/env.sh when
+#     set (was hardcoded 1); values below 1 fail with a clean error.
 #   v1.1.0  2026-09-26
 #   - FIX: negative-strand 5'/3' UTRs were swapped (interval selection
 #     used plus-strand logic for both strands); UTR sides are now chosen
@@ -39,12 +42,13 @@ are accepted.
 
 import argparse
 import logging
+import os
 import sys
 from multiprocessing import Pool
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 
 def parse_genepred_line(line: str) -> Tuple:
@@ -284,7 +288,9 @@ notes:
         "--utr", type=str, choices=["5UTR", "3UTR", "both"], default="5UTR",
         help="UTR type to extract (default: 5UTR).",
     )
-    parser.add_argument("-t", "--threads", type=int, default=1, help="Number of threads (default: 1).")
+    parser.add_argument("-t", "--threads", type=int,
+                        default=int(os.environ.get("BUC_THREADS", "1") or 1),
+                        help="Number of threads (default: BUC_THREADS or 1).")
     parser.add_argument(
         "--log-level", type=str, default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -307,6 +313,9 @@ def main() -> None:
     if not Path(args.input).is_file():
         logging.error("Input file not found: %s", args.input)
         sys.exit(1)
+
+    if args.threads < 1:
+        parser.error("--threads must be >= 1")
 
     convert(args.input, args.output, args.utr, args.threads)
 
