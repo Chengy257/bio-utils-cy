@@ -24,6 +24,8 @@ bio-utils-cy/
 │   └── env.local.sh.example # Template to copy when setting up a new machine
 ├── docs/
 │   └── DEPENDENCIES.md      # Per-script dependency matrix (tools / Python / R)
+├── lib/                     # Shared code sourced/imported by bin/ scripts (e.g. calculate_tpm.R)
+├── tests/                   # Functional test-suite (unittest); run tests/run_tests.sh
 ├── tools/
 │   ├── smoke_test.sh        # CLI regression: every script must answer -h
 │   └── doctor.sh            # Dependency checks, path locator, migration checklist

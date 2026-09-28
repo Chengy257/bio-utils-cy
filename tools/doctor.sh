@@ -55,15 +55,17 @@ REGISTRY=(
     "BUC_GFF2BED_BIN|gff2bed"
 )
 
-# Python packages imported by bin/*.py (import name)
-PY_PKGS=(Bio pandas numpy matplotlib networkx scipy sklearn community tqdm lxml pyteomics pybedtools markov_clustering)
+# Python packages imported by bin/*.py (import name).
+# Optional extras NOT listed here (doctor only fails on hard requirements):
+#   pymzml (plot_ms2_spectrum mzML input), openpyxl (pride_metadata xlsx output).
+PY_PKGS=(Bio pandas numpy matplotlib networkx scipy sklearn community tqdm markov_clustering)
 
 # R packages loaded by bin/*.R
 R_PKGS=(getopt ggplot2 Biostrings sangerseqR GenomicFeatures edgeR DESeq2
-        BiocParallel gplots RColorBrewer amap aPEAR clusterProfiler magrittr
-        plotrix dplyr rtracklayer ape aplot ggtree GOSemSim cowplot data.table
-        GenomicRanges Gviz qqman circlize ComplexHeatmap UpSetR ggsci patchwork
-        Mfuzz Biobase)
+        BiocParallel pheatmap ashr RColorBrewer aPEAR clusterProfiler magrittr
+        R.utils plotrix dplyr rtracklayer ape aplot ggtree GOSemSim cowplot
+        data.table GenomicRanges Gviz qqman circlize ComplexHeatmap UpSetR
+        ggsci patchwork Mfuzz Biobase)
 
 tool_status() {  # $1=var $2=tool -> echoes "STATUS|resolved_path"
     local var="$1" tool="$2" cand

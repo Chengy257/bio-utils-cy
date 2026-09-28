@@ -79,7 +79,7 @@ Legend: **Tools** = external executables · **Py** = Python packages (import nam
 | `ena_ascp_download.py` | ascp | — | — |
 | `fetch_sra_metadata_ncbi.py` | — (HTTPS) | — | NCBI_EMAIL, NCBI_API_KEY |
 | `fetch_sra_metadata_ena.py` | — (HTTPS) | — | — |
-| `pride_metadata.py` | — (HTTPS for `fetch`) | — | — |
+| `pride_metadata.py` | — (HTTPS for `fetch`) | openpyxl (optional — xlsx output; falls back to CSV) | — |
 | `search_sra_riboseq.py` | — (HTTPS) | Bio, tqdm | NCBI_EMAIL, NCBI_API_KEY |
 | `format_sra_summary.py` | — | — | — |
 | `extract_species_rna_rfam.sh` | seqkit (BUC_SEQKIT_BIN) | — | — |
@@ -94,7 +94,7 @@ Legend: **Tools** = external executables · **Py** = Python packages (import nam
 
 | Script | Tools | Py |
 |--------|-------|----|
-| `plot_ms2_spectrum.py` | — | lxml, pyteomics, matplotlib, numpy |
+| `plot_ms2_spectrum.py` | — | matplotlib, numpy, pymzml (optional — only for mzML input; MGF/mzid are stdlib) |
 | `batch_dssp.sh` | dssp or mkdssp, parallel | — |
 | `dssp_summary.py` | — (parses output) | pandas |
 | `batch_pymol_render.py` | pymol | — |
@@ -131,7 +131,7 @@ Legend: **Tools** = external executables · **Py** = Python packages (import nam
 
 ## Summary: machine-level requirements
 
-- **External tools** (20): prefetch, fasterq-dump, fastq-dump, fastqc, parallel, ascp, blastn, blastp, makeblastdb, mkdssp, pymol, ChimeraX, plink, vcftools, featureCounts, samtools, infer_experiment.py, bamCoverage, gtf2bed, gff2bed — pin each in `config/env.local.sh`. (`bedtools` is no longer needed by any script; the leftover `BUC_BEDTOOLS_BIN` slot in `config/env.sh` is slated for removal in the cleanup phase.)
-- **Python** (12): biopython, pandas, numpy, matplotlib, networkx, scipy, scikit-learn, community (python-louvain), tqdm, lxml, pyteomics, markov-clustering.
-- **R** (33): see tables above — the Rscript interpreter and library path come from `BUC_RSCRIPT_BIN` / `BUC_R_LIBS`.
+- **External tools** (20): prefetch, fasterq-dump, fastq-dump, fastqc, parallel, ascp, blastn, blastp, makeblastdb, mkdssp, pymol, ChimeraX, plink, vcftools, featureCounts, samtools, infer_experiment.py, bamCoverage, gtf2bed, gff2bed — pin each in `config/env.local.sh`. (`bedtools` is no longer needed by any script; the former `BUC_BEDTOOLS_BIN` slot was removed from `config/env.sh`.)
+- **Python** (10 hard requirements): biopython, pandas, numpy, matplotlib, networkx, scipy, scikit-learn, community (python-louvain), tqdm, markov-clustering. Optional: pymzml (mzML input for plot_ms2_spectrum), openpyxl (xlsx output for pride_metadata).
+- **R** (34): see tables above — the Rscript interpreter and library path come from `BUC_RSCRIPT_BIN` / `BUC_R_LIBS`.
 - **Credentials**: `NCBI_EMAIL`, `NCBI_API_KEY` for NCBI E-utilities scripts.
