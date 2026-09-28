@@ -7,6 +7,11 @@
 # Created Time: 2026
 #
 # Changelog:
+#   v1.1.1  2026-09-28
+#   - NOTE: the worker pool runs pure-Python CPU work, so the GIL caps it
+#     at single-core throughput; --threads mostly bounds concurrency for
+#     large batches and is kept for interface consistency with the other
+#     batch scripts.
 #   v1.1.0  2026-09-26
 #   - FIX: unequal-length records were silently truncated to the
 #     shorter one and compared anyway; an aligned file with ragged
